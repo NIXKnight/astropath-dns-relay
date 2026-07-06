@@ -218,6 +218,10 @@ async def handle_query(
         return _signed_error_reply(
             wire, keyring, dns.rcode.NOTAUTH, tsig_error=dns.rcode.BADKEY
         )
+    except dns.exception.DNSException:
+        # Malformed / unparseable packet with no answerable context (SPEC §3.12):
+        # drop it. The listener closes the TCP connection / ignores the datagram.
+        return None
 
     # Auth gate (BLOCKER-1): from_wire does NOT raise on an ABSENT TSIG.
     if not msg.had_tsig:

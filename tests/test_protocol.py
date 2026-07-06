@@ -85,6 +85,11 @@ def rcode_of(wire: bytes) -> int:
     return int(flags) & 0xF
 
 
+def id_of(wire: bytes) -> int:
+    (msg_id,) = struct.unpack("!H", wire[0:2])
+    return int(msg_id)
+
+
 async def test_unsigned_update_rejected_notauth_and_not_dispatched(
     make_unsigned_update: UpdateBuilder,
     keyring: Keyring,
@@ -413,3 +418,40 @@ def test_peer_exception_classes_never_caught() -> None:
     source = inspect.getsource(protocol)
     for name in ("PeerBadKey", "PeerBadSignature", "PeerBadTime", "PeerBadTruncation"):
         assert name not in source
+
+
+# --------------------------------------------------------------------------- #
+# T-M1-13: malformed-packet safety + request-id preservation
+# --------------------------------------------------------------------------- #
+@pytest.mark.parametrize(
+    "wire",
+    [
+        b"",  # empty
+        b"\x00\x01",  # shorter than a 12-byte header
+        struct.pack("!HHHHHH", 0x1234, 0, 5, 0, 0, 0),  # claims 5 questions, has none
+        b"\xff" * 32,  # garbage
+    ],
+)
+async def test_malformed_packet_is_dropped_without_crashing(
+    wire: bytes,
+    keyring: Keyring,
+    metrics: DataPlaneMetrics,
+) -> None:
+    reply = await handle_query(
+        wire, keyring, FakeDispatcher(), source="1.2.3.4", metrics=metrics
+    )
+    assert reply is None  # dropped, listener never crashes
+
+
+async def test_request_id_preserved_in_reply(
+    keyring: Keyring,
+    metrics: DataPlaneMetrics,
+) -> None:
+    u = dns.update.UpdateMessage("example.com.")  # unsigned -> NOTAUTH reply
+    u.add("_acme-challenge.example.com.", 300, "TXT", "tok")
+    u.id = 0x4D2
+    reply = await handle_query(
+        u.to_wire(), keyring, FakeDispatcher(), source="1.2.3.4", metrics=metrics
+    )
+    assert reply is not None
+    assert id_of(reply) == 0x4D2
