@@ -49,8 +49,14 @@ def test_env_vars_load_with_prefix(monkeypatch: pytest.MonkeyPatch) -> None:
 
     settings = Settings()
 
-    assert settings.database_dsn.get_secret_value() == _SECRET_ENV["ASTROPATH_DATABASE_DSN"]
-    assert settings.credential_kek.get_secret_value() == _SECRET_ENV["ASTROPATH_CREDENTIAL_KEK"]
+    assert (
+        settings.database_dsn.get_secret_value()
+        == _SECRET_ENV["ASTROPATH_DATABASE_DSN"]
+    )
+    assert (
+        settings.credential_kek.get_secret_value()
+        == _SECRET_ENV["ASTROPATH_CREDENTIAL_KEK"]
+    )
     assert settings.dns_port == 5353  # int coercion from env string
     assert settings.log_level == "DEBUG"
     # unset non-secret config keeps its default
@@ -87,7 +93,10 @@ def test_secretstr_never_renders(monkeypatch: pytest.MonkeyPatch) -> None:
 
     # masking marker present; real value retrievable only via get_secret_value()
     assert "**********" in repr(settings.session_secret)
-    assert settings.session_secret.get_secret_value() == _SECRET_ENV["ASTROPATH_SESSION_SECRET"]
+    assert (
+        settings.session_secret.get_secret_value()
+        == _SECRET_ENV["ASTROPATH_SESSION_SECRET"]
+    )
 
 
 def test_missing_required_secret_raises(monkeypatch: pytest.MonkeyPatch) -> None:
