@@ -31,18 +31,97 @@ answer an unsigned UPDATE with NOTAUTH, never dispatching it.
 
 from __future__ import annotations
 
+import struct
+from dataclasses import dataclass
 from typing import Protocol
 
+import dns.exception
+import dns.flags
 import dns.message
 import dns.name
 import dns.opcode
 import dns.rcode
+import dns.rdata
+import dns.rdatatype
+import dns.rdtypes.ANY.TSIG
 import dns.tsig
 import dns.update
+import dns.wire
 
-from astropath.observability import TSIG_ABSENT, DataPlaneMetrics
+from astropath.observability import (
+    TSIG_ABSENT,
+    TSIG_BADKEY,
+    TSIG_BADSIG,
+    TSIG_BADTIME,
+    TSIG_UNKNOWNKEY,
+    DataPlaneMetrics,
+)
 
 __all__ = ["ChallengeDispatcher", "handle_query"]
+
+
+@dataclass(frozen=True)
+class _TsigWire:
+    """Context recovered directly from the wire (SPEC §3.5).
+
+    Needed because a raised inbound-TSIG failure discards the parsed query and a
+    keyring-less re-parse raises ``UnknownTSIGKey`` — so id/opcode/keyname/mac
+    for the signed error reply are read straight from the bytes.
+    """
+
+    id: int
+    opcode: int
+    keyname: dns.name.Name | None
+    mac: bytes | None
+
+
+def _extract_tsig_context(wire: bytes) -> _TsigWire | None:
+    """Recover id/opcode and (if present) the TSIG keyname + MAC from the wire.
+
+    Returns ``None`` when the packet cannot be parsed enough to answer (no usable
+    id) — the caller then drops it (SPEC §3.12).
+    """
+    try:
+        msg_id, flags, qd, an, ns, ar = struct.unpack(
+            "!HHHHHH", dns.wire.Parser(wire).get_bytes(12)
+        )
+        parser = dns.wire.Parser(wire)
+        parser.get_bytes(12)
+        for _ in range(qd):
+            parser.get_name()
+            parser.get_struct("!HH")
+        keyname: dns.name.Name | None = None
+        mac: bytes | None = None
+        for _ in range(an + ns + ar):
+            name = parser.get_name()
+            rdtype, rdclass, _ttl, rdlen = parser.get_struct("!HHIH")
+            with parser.restrict_to(rdlen):
+                if rdtype == dns.rdatatype.TSIG:
+                    rdata = dns.rdata.from_wire_parser(rdclass, rdtype, parser, None)
+                    if isinstance(rdata, dns.rdtypes.ANY.TSIG.TSIG):
+                        keyname = name
+                        mac = rdata.mac
+                else:
+                    parser.get_bytes(rdlen)
+    except (dns.exception.DNSException, struct.error, ValueError, IndexError):
+        return None
+    return _TsigWire(id=msg_id, opcode=(flags >> 11) & 0xF, keyname=keyname, mac=mac)
+
+
+def _plain_error_reply(wire: bytes, rcode: dns.rcode.Rcode) -> bytes | None:
+    """Build an unsigned reply preserving the request id and opcode (§3.12).
+
+    Used when no key context is available to sign (absent/unknown key). Returns
+    ``None`` if the request id cannot be recovered (drop).
+    """
+    ctx = _extract_tsig_context(wire)
+    if ctx is None:
+        return None
+    response = dns.message.QueryMessage(id=ctx.id)
+    response.flags = dns.flags.QR
+    response.set_opcode(dns.opcode.Opcode(ctx.opcode))
+    response.set_rcode(rcode)
+    return response.to_wire()
 
 
 class ChallengeDispatcher(Protocol):
@@ -82,7 +161,23 @@ async def handle_query(
     A ``None`` return means "drop" (no answerable reply). The auth gate rejects
     an unsigned UPDATE with NOTAUTH and never dispatches it.
     """
-    msg = dns.message.from_wire(wire, keyring=keyring)
+    # Inbound TSIG failure family (SPEC §3.3). Catch exactly these server-side
+    # classes; BadAlgorithm (bound-algorithm mismatch) is folded into BADKEY.
+    # Never catch dns.tsig.Peer* — those are response-side only.
+    try:
+        msg = dns.message.from_wire(wire, keyring=keyring)
+    except dns.message.UnknownTSIGKey:
+        metrics.record_tsig_failure(TSIG_UNKNOWNKEY)
+        return _plain_error_reply(wire, dns.rcode.NOTAUTH)  # unknown key: cannot sign
+    except dns.tsig.BadSignature:
+        metrics.record_tsig_failure(TSIG_BADSIG)
+        return _plain_error_reply(wire, dns.rcode.NOTAUTH)
+    except dns.tsig.BadTime:
+        metrics.record_tsig_failure(TSIG_BADTIME)
+        return _plain_error_reply(wire, dns.rcode.NOTAUTH)
+    except (dns.tsig.BadKey, dns.tsig.BadAlgorithm):
+        metrics.record_tsig_failure(TSIG_BADKEY)
+        return _plain_error_reply(wire, dns.rcode.NOTAUTH)
 
     # Auth gate (BLOCKER-1): from_wire does NOT raise on an ABSENT TSIG.
     if not msg.had_tsig:

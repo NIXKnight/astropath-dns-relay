@@ -20,6 +20,7 @@
 
 from __future__ import annotations
 
+import base64
 import struct
 from collections.abc import Callable
 
@@ -29,12 +30,35 @@ import dns.opcode
 import dns.rcode
 import dns.tsig
 import dns.update
+import pytest
+from prometheus_client import CollectorRegistry
 
 from astropath.data_plane.protocol import handle_query
 from astropath.observability import DataPlaneMetrics
 
 Keyring = dict[dns.name.Name, dns.tsig.Key]
 UpdateBuilder = Callable[..., bytes]
+
+# A client secret that deliberately differs from the server fixture's secret.
+_MISMATCHED_SECRET = base64.b64encode(b"z" * 32).decode()
+
+
+def _client_signed_update(
+    sign_keyring: Keyring, keyname: str, algorithm: dns.name.Name
+) -> bytes:
+    u = dns.update.UpdateMessage(
+        "example.com.",
+        keyname=dns.name.from_text(keyname),
+        keyring=sign_keyring,
+        keyalgorithm=algorithm,
+    )
+    u.add("_acme-challenge.example.com.", 300, "TXT", "tok")
+    return u.to_wire()
+
+
+def _fresh_metrics() -> tuple[CollectorRegistry, DataPlaneMetrics]:
+    reg = CollectorRegistry()
+    return reg, DataPlaneMetrics(registry=reg)
 
 
 class FakeDispatcher:
@@ -164,3 +188,101 @@ async def test_success_reply_is_tsig_signed(
     assert verified.had_tsig is True  # reply carries a valid TSIG
     assert verified.opcode() == dns.opcode.UPDATE  # opcode preserved
     assert verified.rcode() == dns.rcode.NOERROR
+
+
+# --------------------------------------------------------------------------- #
+# T-M1-03: inbound TSIG exception family -> NOTAUTH + metric reason
+# --------------------------------------------------------------------------- #
+async def test_unknown_key_notauth_and_metric(keyring: Keyring) -> None:
+    reg, m = _fresh_metrics()
+    other = {
+        dns.name.from_text("other-key."): dns.tsig.Key(
+            "other-key.", _MISMATCHED_SECRET, dns.tsig.HMAC_SHA256
+        )
+    }
+    wire = _client_signed_update(other, "other-key.", dns.tsig.HMAC_SHA256)
+
+    reply = await handle_query(
+        wire, keyring, FakeDispatcher(), source="1.2.3.4", metrics=m
+    )
+    assert reply is not None
+    assert rcode_of(reply) == dns.rcode.NOTAUTH
+    assert (
+        reg.get_sample_value("astropath_tsig_failures_total", {"reason": "unknownkey"})
+        == 1.0
+    )
+
+
+async def test_bad_signature_notauth_and_metric(keyring: Keyring) -> None:
+    reg, m = _fresh_metrics()
+    wrong = {
+        dns.name.from_text("cm-key."): dns.tsig.Key(
+            "cm-key.", _MISMATCHED_SECRET, dns.tsig.HMAC_SHA256
+        )
+    }
+    wire = _client_signed_update(wrong, "cm-key.", dns.tsig.HMAC_SHA256)
+
+    reply = await handle_query(
+        wire, keyring, FakeDispatcher(), source="1.2.3.4", metrics=m
+    )
+    assert reply is not None
+    assert rcode_of(reply) == dns.rcode.NOTAUTH
+    assert (
+        reg.get_sample_value("astropath_tsig_failures_total", {"reason": "badsig"})
+        == 1.0
+    )
+
+
+async def test_bad_algorithm_maps_to_badkey_metric(keyring: Keyring) -> None:
+    reg, m = _fresh_metrics()
+    sha512 = {
+        dns.name.from_text("cm-key."): dns.tsig.Key(
+            "cm-key.", _MISMATCHED_SECRET, dns.tsig.HMAC_SHA512
+        )
+    }
+    wire = _client_signed_update(sha512, "cm-key.", dns.tsig.HMAC_SHA512)
+
+    reply = await handle_query(
+        wire, keyring, FakeDispatcher(), source="1.2.3.4", metrics=m
+    )
+    assert reply is not None
+    assert rcode_of(reply) == dns.rcode.NOTAUTH
+    assert (
+        reg.get_sample_value("astropath_tsig_failures_total", {"reason": "badkey"})
+        == 1.0
+    )
+
+
+async def test_bad_time_notauth_and_badtime_metric(
+    keyring: Keyring,
+    make_signed_update: UpdateBuilder,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import time as _time
+
+    reg, m = _fresh_metrics()
+    wire = make_signed_update()
+    real_time = _time.time
+    monkeypatch.setattr("dns.message.time.time", lambda: real_time() + 100_000)
+
+    reply = await handle_query(
+        wire, keyring, FakeDispatcher(), source="1.2.3.4", metrics=m
+    )
+    assert reply is not None
+    assert rcode_of(reply) == dns.rcode.NOTAUTH
+    assert (
+        reg.get_sample_value("astropath_tsig_failures_total", {"reason": "badtime"})
+        == 1.0
+    )
+    assert reg.get_sample_value("astropath_tsig_badtime_total") == 1.0
+
+
+def test_peer_exception_classes_never_caught() -> None:
+    """SPEC §3.3: Peer* classes are response-side only and must not be caught."""
+    import inspect
+
+    import astropath.data_plane.protocol as protocol
+
+    source = inspect.getsource(protocol)
+    for name in ("PeerBadKey", "PeerBadSignature", "PeerBadTime", "PeerBadTruncation"):
+        assert name not in source
