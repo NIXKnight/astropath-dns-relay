@@ -1,0 +1,60 @@
+# Docker build-context excludes (T-M0-07). Keep the context small and keep
+# secrets + design docs out of the image entirely.
+#
+# NOTE: exclusions here shrink the context and speed builds; they do not
+# override what a stage COPYs. The build needs: pyproject.toml, uv.lock,
+# src/, and frontend/ (source only) — none of which are excluded below.
+
+# --- Version control / CI ---
+.git
+.gitignore
+.gitattributes
+.github
+
+# --- Python virtualenvs & caches ---
+.venv
+venv
+__pycache__
+**/__pycache__
+*.py[cod]
+*.egg-info
+.eggs
+.mypy_cache
+.ruff_cache
+.pytest_cache
+.coverage
+coverage.xml
+htmlcov
+build
+dist
+
+# --- Tests (not shipped in the runtime image) ---
+tests
+
+# --- Frontend build artifacts (the frontend stage builds its own dist/) ---
+frontend/node_modules
+frontend/dist
+
+# --- Secrets / local env — never enter the build context or image ---
+# Matches .env, .env.local, .env.example, etc. Nothing here is COPYed in.
+.env
+.env.*
+
+# --- Design docs — MUST never enter the build context or image ---
+SPEC.md
+PLAN.md
+TASKS.md
+*.md
+
+# --- Docker / compose artifacts (not needed inside the image) ---
+Dockerfile
+.dockerignore
+docker-compose*.yml
+docker-compose*.yaml
+
+# --- Editor / OS noise ---
+.idea
+.vscode
+*.swp
+*.swo
+.DS_Store
