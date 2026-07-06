@@ -33,6 +33,7 @@ from enum import Enum
 
 import dns.name
 import dns.rdataclass
+import dns.rdatatype
 import dns.rrset
 import dns.update
 
@@ -41,6 +42,14 @@ from astropath.providers.base import Provider
 
 class ZoneResolutionError(ValueError):
     """The UPDATE has no usable ZONE section."""
+
+
+class WriteSurfaceViolation(Exception):
+    """The UPDATE violates the ``_acme-challenge`` TXT allowlist (→ REFUSED).
+
+    A valid TSIG is NOT a general zone-write credential (BLOCKER-2); anything
+    outside the allowlist is rejected before any provider dispatch.
+    """
 
 
 def zone_from_message(msg: dns.update.UpdateMessage) -> dns.name.Name:
@@ -103,3 +112,34 @@ def classify_action(rrset: dns.rrset.RRset) -> Action:
     if rrset.deleting in (dns.rdataclass.NONE, dns.rdataclass.ANY):
         return Action.CLEANUP
     raise ValueError(f"unexpected update class deleting={rrset.deleting!r}")
+
+
+def validate_write_surface(
+    msg: dns.update.UpdateMessage, route: Route
+) -> tuple[Action, dns.rrset.RRset]:
+    """Enforce the write-surface allowlist (SPEC §4.1, BLOCKER-2).
+
+    Accept ONLY an ADD/DELETE of a single TXT rrset owned by exactly
+    ``_acme-challenge.<zone>``. Any other owner/type/class, or an UPDATE mixing
+    in any other rrset, is rejected whole with :class:`WriteSurfaceViolation`
+    (the caller maps that to REFUSED). The (empty) prerequisite section is
+    ignored — cert-manager may send none (SPEC §3.10).
+    """
+    if len(msg.update) != 1:
+        raise WriteSurfaceViolation(
+            f"UPDATE section must contain exactly one rrset, got {len(msg.update)}"
+        )
+    rrset = msg.update[0]
+    if rrset.rdtype != dns.rdatatype.TXT:
+        raise WriteSurfaceViolation(
+            f"only TXT rrsets are permitted, got {dns.rdatatype.to_text(rrset.rdtype)}"
+        )
+    if rrset.name.canonicalize() != route.record_name:
+        raise WriteSurfaceViolation(
+            f"owner {rrset.name} is not the permitted _acme-challenge record"
+        )
+    try:
+        action = classify_action(rrset)
+    except ValueError as exc:
+        raise WriteSurfaceViolation(str(exc)) from exc
+    return action, rrset

@@ -26,13 +26,16 @@ from typing import Any
 import dns.message
 import dns.name
 import dns.update
+import pytest
 from pydantic import BaseModel
 
 from astropath.data_plane.dispatcher import (
     Action,
     Route,
     RoutingTable,
+    WriteSurfaceViolation,
     classify_action,
+    validate_write_surface,
     zone_from_message,
 )
 from astropath.providers.base import Provider, ProviderError
@@ -152,3 +155,50 @@ def test_routing_longest_suffix_match() -> None:
 def test_routing_unknown_zone_returns_none() -> None:
     table = RoutingTable([_route(FakeProvider(), "example.com.")])
     assert table.match(dns.name.from_text("other.org.")) is None
+
+
+# --------------------------------------------------------------------------- #
+# T-M1-15: write-surface allowlist (BLOCKER-2)
+# --------------------------------------------------------------------------- #
+def _mixed_update() -> dns.update.UpdateMessage:
+    u = dns.update.UpdateMessage("example.com.")
+    u.add("_acme-challenge.example.com.", 300, "TXT", "tok")
+    u.add("www.example.com.", 300, "A", "192.0.2.1")  # extra rrset -> reject whole
+    msg = dns.message.from_wire(u.to_wire())
+    assert isinstance(msg, dns.update.UpdateMessage)
+    return msg
+
+
+def test_write_surface_accepts_acme_challenge_txt_add() -> None:
+    route = _route(FakeProvider())
+    action, rrset = validate_write_surface(_parsed_update(), route)
+    assert action is Action.PRESENT
+    assert rrset.name == dns.name.from_text("_acme-challenge.example.com.")
+
+
+def test_write_surface_accepts_acme_challenge_txt_delete() -> None:
+    route = _route(FakeProvider())
+    action, _ = validate_write_surface(_parsed_update(delete=True), route)
+    assert action is Action.CLEANUP
+
+
+def test_write_surface_rejects_wrong_owner() -> None:
+    route = _route(FakeProvider())
+    msg = _parsed_update(record="www.example.com.")  # TXT but not _acme-challenge
+    with pytest.raises(WriteSurfaceViolation):
+        validate_write_surface(msg, route)
+
+
+def test_write_surface_rejects_non_txt_type() -> None:
+    route = _route(FakeProvider())
+    msg = _parsed_update(
+        record="_acme-challenge.example.com.", rdtype="A", value="192.0.2.1"
+    )
+    with pytest.raises(WriteSurfaceViolation):
+        validate_write_surface(msg, route)
+
+
+def test_write_surface_rejects_mixed_rrsets() -> None:
+    route = _route(FakeProvider())
+    with pytest.raises(WriteSurfaceViolation):
+        validate_write_surface(_mixed_update(), route)
