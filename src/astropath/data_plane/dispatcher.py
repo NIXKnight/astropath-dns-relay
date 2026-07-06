@@ -32,6 +32,7 @@ import time
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from enum import Enum
+from typing import Protocol
 
 import dns.name
 import dns.rcode
@@ -99,6 +100,18 @@ class RoutingTable:
                 candidate = candidate.parent()
             except dns.name.NoParent:
                 return None
+
+
+class RoutingSource(Protocol):
+    """A zone → :class:`Route` resolver the dispatcher reads (§3.9, MED-2).
+
+    Satisfied structurally by :class:`RoutingTable` (a static file-sourced map,
+    M1) and by the DB-backed in-memory cache (``astropath.cache.RoutingCache``,
+    M2), so the dispatcher serves from either without change. A DB-backed cache
+    returns from its last-good snapshot during a Postgres blip.
+    """
+
+    def match(self, zone: dns.name.Name) -> Route | None: ...
 
 
 class Action(Enum):
@@ -205,7 +218,7 @@ class Dispatcher:
 
     def __init__(
         self,
-        routing: RoutingTable,
+        routing: RoutingSource,
         metrics: DataPlaneMetrics,
         *,
         clock: Callable[[], float] = time.time,
