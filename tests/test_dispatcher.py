@@ -25,15 +25,18 @@ from typing import Any
 
 import dns.message
 import dns.name
+import dns.rcode
 import dns.rdataclass
 import dns.rdatatype
 import dns.rrset
 import dns.update
 import pytest
+from prometheus_client import CollectorRegistry
 from pydantic import BaseModel
 
 from astropath.data_plane.dispatcher import (
     Action,
+    Dispatcher,
     Route,
     RoutingTable,
     WriteSurfaceViolation,
@@ -42,6 +45,7 @@ from astropath.data_plane.dispatcher import (
     validate_write_surface,
     zone_from_message,
 )
+from astropath.observability import DataPlaneMetrics
 from astropath.providers.base import Provider, ProviderError
 
 
@@ -274,3 +278,94 @@ def test_normalize_present_requires_value() -> None:
     )
     with pytest.raises(WriteSurfaceViolation):
         normalize_txt_values(empty_rrset, Action.PRESENT)
+
+
+# --------------------------------------------------------------------------- #
+# T-M1-25: dispatcher (zone -> backend -> provider -> rcode)
+# --------------------------------------------------------------------------- #
+def _dispatcher(
+    provider: Provider, zone: str = "example.com."
+) -> tuple[Dispatcher, CollectorRegistry]:
+    reg = CollectorRegistry()
+    table = RoutingTable([_route(provider, zone)])
+    dispatcher = Dispatcher(table, DataPlaneMetrics(registry=reg), clock=lambda: 1000.0)
+    return dispatcher, reg
+
+
+async def test_dispatch_present_calls_provider_and_returns_noerror() -> None:
+    provider = FakeProvider()
+    dispatcher, reg = _dispatcher(provider)
+
+    rcode = await dispatcher.dispatch(_parsed_update(value="tok"), source="1.2.3.4")
+
+    assert rcode == dns.rcode.NOERROR
+    assert provider.present_calls == [
+        ("example.com.", "_acme-challenge.example.com.", ("tok",))
+    ]
+    assert (
+        reg.get_sample_value(
+            "astropath_challenges_total",
+            {"provider": "fake", "action": "present", "result": "ok"},
+        )
+        == 1.0
+    )
+    assert (
+        reg.get_sample_value(
+            "astropath_zone_last_success_timestamp", {"zone": "example.com."}
+        )
+        == 1000.0
+    )
+
+
+async def test_dispatch_cleanup_calls_provider() -> None:
+    provider = FakeProvider()
+    dispatcher, _reg = _dispatcher(provider)
+
+    rcode = await dispatcher.dispatch(
+        _parsed_update(delete=True, value="tok"), source="1.2.3.4"
+    )
+
+    assert rcode == dns.rcode.NOERROR
+    assert provider.cleanup_calls == [
+        ("example.com.", "_acme-challenge.example.com.", ("tok",))
+    ]
+
+
+async def test_dispatch_unknown_zone_refused() -> None:
+    provider = FakeProvider()
+    dispatcher, _reg = _dispatcher(provider, zone="example.com.")
+
+    rcode = await dispatcher.dispatch(
+        _parsed_update(zone="other.org."), source="1.2.3.4"
+    )
+
+    assert rcode == dns.rcode.REFUSED
+    assert provider.present_calls == []  # never dispatched
+
+
+async def test_dispatch_write_surface_violation_refused() -> None:
+    provider = FakeProvider()
+    dispatcher, _reg = _dispatcher(provider)
+
+    rcode = await dispatcher.dispatch(
+        _parsed_update(record="www.example.com."), source="1.2.3.4"
+    )
+
+    assert rcode == dns.rcode.REFUSED
+    assert provider.present_calls == []
+
+
+async def test_dispatch_provider_error_servfail() -> None:
+    provider = FakeProvider(fail=True)
+    dispatcher, reg = _dispatcher(provider)
+
+    rcode = await dispatcher.dispatch(_parsed_update(value="tok"), source="1.2.3.4")
+
+    assert rcode == dns.rcode.SERVFAIL
+    assert (
+        reg.get_sample_value(
+            "astropath_challenges_total",
+            {"provider": "fake", "action": "present", "result": "error"},
+        )
+        == 1.0
+    )

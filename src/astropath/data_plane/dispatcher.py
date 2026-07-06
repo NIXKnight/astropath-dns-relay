@@ -27,18 +27,21 @@ SERVFAIL; success maps to NOERROR (SPEC §3.6).
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+import time
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from enum import Enum
 
 import dns.name
+import dns.rcode
 import dns.rdataclass
 import dns.rdatatype
 import dns.rdtypes.ANY.TXT
 import dns.rrset
 import dns.update
 
-from astropath.providers.base import Provider
+from astropath.observability import DataPlaneMetrics
+from astropath.providers.base import Provider, ProviderError
 
 # ACME DNS-01 tokens are a 43-char base64url SHA-256 digest; a TXT
 # character-string is bounded to 255 octets on the wire regardless.
@@ -187,3 +190,72 @@ def normalize_txt_values(
             raise WriteSurfaceViolation(f"TXT value exceeds {_MAX_TXT_LEN} characters")
         values.append(token)
     return values
+
+
+class Dispatcher:
+    """Route a verified UPDATE to its provider and return the reply rcode.
+
+    Implements the :class:`~astropath.data_plane.protocol.ChallengeDispatcher`
+    interface. TSIG verification and the auth gate already happened upstream;
+    this stage owns zone routing, the write-surface allowlist, TXT validation,
+    and the provider call (SPEC §3.6): REFUSED for unknown-zone / write-surface
+    rejections, SERVFAIL for provider failure, NOERROR on success.
+    """
+
+    def __init__(
+        self,
+        routing: RoutingTable,
+        metrics: DataPlaneMetrics,
+        *,
+        clock: Callable[[], float] = time.time,
+    ) -> None:
+        self._routing = routing
+        self._metrics = metrics
+        self._clock = clock
+
+    async def dispatch(
+        self, msg: dns.update.UpdateMessage, *, source: str
+    ) -> dns.rcode.Rcode:
+        try:
+            zone = zone_from_message(msg)
+        except ZoneResolutionError:
+            return dns.rcode.REFUSED
+        route = self._routing.match(zone)
+        if route is None:
+            return dns.rcode.REFUSED  # zone not managed here
+
+        try:
+            action, rrset = validate_write_surface(msg, route)
+            values = normalize_txt_values(
+                rrset, action, allow_multivalue=route.provider.supports_multivalue
+            )
+        except WriteSurfaceViolation:
+            return dns.rcode.REFUSED
+
+        return await self._invoke_provider(route, action, rrset.name.to_text(), values)
+
+    async def _invoke_provider(
+        self,
+        route: Route,
+        action: Action,
+        record_name: str,
+        values: list[str],
+    ) -> dns.rcode.Rcode:
+        provider = route.provider
+        zone_text = route.zone.to_text()
+        started = time.perf_counter()
+        try:
+            if action is Action.PRESENT:
+                await provider.present(zone_text, record_name, values)
+            else:
+                await provider.cleanup(zone_text, record_name, values)
+        except ProviderError:
+            self._metrics.record_challenge(provider.type, action.value, "error")
+            return dns.rcode.SERVFAIL
+        finally:
+            self._metrics.provider_call_duration.labels(provider=provider.type).observe(
+                time.perf_counter() - started
+            )
+        self._metrics.record_challenge(provider.type, action.value, "ok")
+        self._metrics.mark_zone_success(zone_text, self._clock())
+        return dns.rcode.NOERROR
