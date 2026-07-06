@@ -419,3 +419,29 @@ async def test_different_fqdns_run_concurrently() -> None:
         dispatcher.dispatch(_parsed_update(zone="b.com."), source="y"),
     )
     assert provider.max_active == 2  # distinct records are not serialized
+
+
+# --------------------------------------------------------------------------- #
+# T-M1-10: UPDATE / prerequisite section handling
+# --------------------------------------------------------------------------- #
+async def test_empty_prerequisite_is_tolerated() -> None:
+    provider = FakeProvider()
+    dispatcher, _reg = _dispatcher(provider)
+    msg = _parsed_update()
+    assert msg.prerequisite == []  # cert-manager sends none
+    assert await dispatcher.dispatch(msg, source="x") == dns.rcode.NOERROR
+
+
+async def test_present_prerequisite_is_ignored_not_rejected() -> None:
+    u = dns.update.UpdateMessage("example.com.")
+    u.present("_acme-challenge.example.com.", "TXT")  # a prerequisite
+    u.add("_acme-challenge.example.com.", 300, "TXT", "tok")
+    msg = dns.message.from_wire(u.to_wire())
+    assert isinstance(msg, dns.update.UpdateMessage)
+    assert msg.prerequisite  # non-empty prerequisite section
+    assert len(msg.update) == 1  # prereq did not land in the update section
+
+    provider = FakeProvider()
+    dispatcher, _reg = _dispatcher(provider)
+    assert await dispatcher.dispatch(msg, source="x") == dns.rcode.NOERROR
+    assert len(provider.present_calls) == 1  # dispatched despite the prerequisite
