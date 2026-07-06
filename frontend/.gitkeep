@@ -1,0 +1,4 @@
+# Placeholder. The Vite + React + TypeScript SPA is scaffolded in T-M4-01
+# (frontend/package.json, vite.config.ts, src/ …) and built to frontend/dist/,
+# which is copied into the runtime image. This file only keeps the otherwise
+# empty directory tracked in git.
