@@ -106,6 +106,11 @@ class DataPlaneMetrics:
             ["zone"],
             registry=reg,
         )
+        self.audit_failures = Counter(
+            "astropath_audit_failures",
+            "ChallengeEvent audit writes that failed (DNS answer path unaffected).",
+            registry=reg,
+        )
 
     # -- convenience recorders --------------------------------------------- #
     def record_tsig_failure(self, reason: str) -> None:
@@ -125,6 +130,10 @@ class DataPlaneMetrics:
 
     def mark_zone_success(self, zone: str, timestamp: float) -> None:
         self.zone_last_success.labels(zone=zone).set(timestamp)
+
+    def record_audit_failure(self) -> None:
+        """Count an audit-write failure (HIGH-8: never breaks the answer path)."""
+        self.audit_failures.inc()
 
 
 def start_metrics_server(

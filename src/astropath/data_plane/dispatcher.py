@@ -28,6 +28,7 @@ SERVFAIL; success maps to NOERROR (SPEC §3.6).
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
@@ -44,6 +45,8 @@ import dns.update
 
 from astropath.observability import DataPlaneMetrics
 from astropath.providers.base import Provider, ProviderError
+
+log = logging.getLogger("astropath.dispatcher")
 
 # ACME DNS-01 tokens are a 43-char base64url SHA-256 digest; a TXT
 # character-string is bounded to 255 octets on the wire regardless.
@@ -206,6 +209,42 @@ def normalize_txt_values(
     return values
 
 
+@dataclass(frozen=True)
+class AuditRecord:
+    """One challenge outcome to be persisted as a ``ChallengeEvent`` (HIGH-8).
+
+    A plain, ORM-free value the dispatcher builds and hands to an
+    :class:`AuditSink`. Carries **no secret material** — only the zone, record
+    handle, action, provider, result, latency, authorizing TSIG key id, source
+    IP, and an already-redacted error detail (a provider error string).
+    """
+
+    zone: str
+    record_name: str
+    action: str
+    provider: str
+    result: str
+    latency_ms: int
+    tsig_key_id: int | None
+    source: str
+    error_detail: str | None
+
+
+class AuditSink(Protocol):
+    """Persists an :class:`AuditRecord` (implemented by the DB sink, T-M2-06).
+
+    Kept structural so the data plane never imports the ORM. A failing
+    ``record`` must not break the DNS answer path — the dispatcher guards the
+    call and downgrades a failure to a log line plus a metric (HIGH-8).
+    """
+
+    async def record(self, record: AuditRecord) -> None: ...
+
+
+#: Resolves a verified request's TSIG key name to its ``TsigKey`` row id.
+TsigKeyResolver = Callable[[dns.name.Name], int | None]
+
+
 class Dispatcher:
     """Route a verified UPDATE to its provider and return the reply rcode.
 
@@ -214,6 +253,11 @@ class Dispatcher:
     this stage owns zone routing, the write-surface allowlist, TXT validation,
     and the provider call (SPEC §3.6): REFUSED for unknown-zone / write-surface
     rejections, SERVFAIL for provider failure, NOERROR on success.
+
+    When an :class:`AuditSink` is supplied (M2), every provider call also writes
+    one append-only ``ChallengeEvent`` (HIGH-8). The audit write is isolated: a
+    failure is logged and counted, never propagated into the DNS answer. The
+    optional ``tsig_key_resolver`` stamps the authorizing key id on the audit row.
     """
 
     def __init__(
@@ -222,10 +266,14 @@ class Dispatcher:
         metrics: DataPlaneMetrics,
         *,
         clock: Callable[[], float] = time.time,
+        audit: AuditSink | None = None,
+        tsig_key_resolver: TsigKeyResolver | None = None,
     ) -> None:
         self._routing = routing
         self._metrics = metrics
         self._clock = clock
+        self._audit = audit
+        self._tsig_resolver = tsig_key_resolver
         # One lock per record owner (SPEC §3.13): HE holds a single value per
         # dynamic record, so overlapping pushes to one FQDN must not clobber.
         self._locks: dict[str, asyncio.Lock] = {}
@@ -257,10 +305,24 @@ class Dispatcher:
             return dns.rcode.REFUSED
 
         record_name = rrset.name.to_text()
+        tsig_key_id = self._resolve_tsig_key_id(msg)
         # Serialize per FQDN so concurrent challenges to one record queue instead
         # of racing the provider's single-value write (SPEC §3.13, HIGH-9).
         async with self._lock_for(rrset.name.canonicalize().to_text()):
-            return await self._invoke_provider(route, action, record_name, values)
+            return await self._invoke_provider(
+                route,
+                action,
+                record_name,
+                values,
+                source=source,
+                tsig_key_id=tsig_key_id,
+            )
+
+    def _resolve_tsig_key_id(self, msg: dns.update.UpdateMessage) -> int | None:
+        """Resolve the authorizing TSIG key row id for the audit trail (HIGH-8)."""
+        if self._tsig_resolver is None or msg.keyname is None:
+            return None
+        return self._tsig_resolver(msg.keyname)
 
     async def _invoke_provider(
         self,
@@ -268,22 +330,59 @@ class Dispatcher:
         action: Action,
         record_name: str,
         values: list[str],
+        *,
+        source: str,
+        tsig_key_id: int | None,
     ) -> dns.rcode.Rcode:
         provider = route.provider
         zone_text = route.zone.to_text()
+        error_detail: str | None = None
         started = time.perf_counter()
         try:
             if action is Action.PRESENT:
                 await provider.present(zone_text, record_name, values)
             else:
                 await provider.cleanup(zone_text, record_name, values)
-        except ProviderError:
-            self._metrics.record_challenge(provider.type, action.value, "error")
-            return dns.rcode.SERVFAIL
-        finally:
-            self._metrics.provider_call_duration.labels(provider=provider.type).observe(
-                time.perf_counter() - started
+        except ProviderError as exc:
+            result, rcode = "error", dns.rcode.SERVFAIL
+            error_detail = str(exc)  # provider errors are already secret-free
+        else:
+            result, rcode = "ok", dns.rcode.NOERROR
+        latency = time.perf_counter() - started
+
+        self._metrics.provider_call_duration.labels(provider=provider.type).observe(
+            latency
+        )
+        self._metrics.record_challenge(provider.type, action.value, result)
+        if result == "ok":
+            self._metrics.mark_zone_success(zone_text, self._clock())
+
+        await self._write_audit(
+            AuditRecord(
+                zone=zone_text,
+                record_name=record_name,
+                action=action.value,
+                provider=provider.type,
+                result=result,
+                latency_ms=int(latency * 1000),
+                tsig_key_id=tsig_key_id,
+                source=source,
+                error_detail=error_detail,
             )
-        self._metrics.record_challenge(provider.type, action.value, "ok")
-        self._metrics.mark_zone_success(zone_text, self._clock())
-        return dns.rcode.NOERROR
+        )
+        return rcode
+
+    async def _write_audit(self, record: AuditRecord) -> None:
+        """Persist the audit row, isolating any failure from the answer (HIGH-8).
+
+        An append-only ``ChallengeEvent`` is written per challenge. If the sink
+        fails (e.g. Postgres unreachable) the DNS reply is unaffected: the failure
+        is logged and counted, never raised.
+        """
+        if self._audit is None:
+            return
+        try:
+            await self._audit.record(record)
+        except Exception:
+            log.exception("audit_write_failed", extra={"zone": record.zone})
+            self._metrics.record_audit_failure()
