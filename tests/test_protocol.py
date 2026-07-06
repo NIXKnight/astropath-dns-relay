@@ -375,6 +375,35 @@ async def test_unknown_key_reply_is_unsigned(keyring: Keyring) -> None:
     assert _reply_tsig(reply) is None  # no key context to sign with
 
 
+@pytest.mark.parametrize(
+    "rcode", [dns.rcode.REFUSED, dns.rcode.SERVFAIL, dns.rcode.NOERROR]
+)
+async def test_dispatcher_rcode_is_passed_through_and_signed(
+    keyring: Keyring,
+    keyname: str,
+    metrics: DataPlaneMetrics,
+    rcode: dns.rcode.Rcode,
+) -> None:
+    """T-M1-06: policy/provider rcodes (REFUSED/SERVFAIL) are signed too (§3.6)."""
+    client = dns.update.UpdateMessage(
+        "example.com.",
+        keyname=dns.name.from_text(keyname),
+        keyring=keyring,
+        keyalgorithm=dns.tsig.HMAC_SHA256,
+    )
+    client.add("_acme-challenge.example.com.", 300, "TXT", "tok")
+    wire = client.to_wire()
+
+    reply = await handle_query(
+        wire, keyring, FakeDispatcher(rcode=rcode), source="1.2.3.4", metrics=metrics
+    )
+    assert reply is not None
+    assert rcode_of(reply) == rcode
+    # keyring context present -> reply is signed regardless of rcode
+    verified = dns.message.from_wire(reply, keyring=keyring, request_mac=client.mac)
+    assert verified.had_tsig is True
+
+
 def test_peer_exception_classes_never_caught() -> None:
     """SPEC §3.3: Peer* classes are response-side only and must not be caught."""
     import inspect
