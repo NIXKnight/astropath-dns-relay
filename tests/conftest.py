@@ -16,9 +16,95 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-"""Shared pytest fixtures and configuration for the AstropathDNSRelay test suite.
+"""Shared pytest fixtures for the AstropathDNSRelay test suite.
 
-Kept intentionally minimal at M0; fixtures (settings factories, ephemeral
-Postgres via testcontainers, dnspython clients) are added by the tasks that need
-them.
+The TSIG/DNS builder fixtures below are reused by the protocol, dispatcher, and
+server tests. All key material is obvious throwaway bytes; no real secret exists
+in this repository (SPEC secret discipline).
 """
+
+from __future__ import annotations
+
+import base64
+from collections.abc import Callable
+
+import dns.name
+import dns.tsig
+import dns.update
+import pytest
+
+from astropath.data_plane.tsig import TsigKeySpec, build_keyring
+from astropath.observability import DataPlaneMetrics
+
+# Reusable throwaway TSIG identity.
+KEYNAME = "cm-key."
+SECRET_B64 = base64.b64encode(b"0123456789abcdef0123456789abcdef").decode()
+
+# A signed-UPDATE builder: (zone, record, value, delete?, sign_keyring?) -> wire.
+UpdateBuilder = Callable[..., bytes]
+
+
+@pytest.fixture
+def keyname() -> str:
+    return KEYNAME
+
+
+@pytest.fixture
+def keyring() -> dict[dns.name.Name, dns.tsig.Key]:
+    return build_keyring([TsigKeySpec(KEYNAME, "hmac-sha256", SECRET_B64)])
+
+
+@pytest.fixture
+def metrics() -> DataPlaneMetrics:
+    from prometheus_client import CollectorRegistry
+
+    return DataPlaneMetrics(registry=CollectorRegistry())
+
+
+@pytest.fixture
+def make_signed_update(
+    keyring: dict[dns.name.Name, dns.tsig.Key],
+) -> UpdateBuilder:
+    def _make(
+        zone: str = "example.com.",
+        record: str = "_acme-challenge.example.com.",
+        value: str = "token-value-abc",
+        *,
+        delete: bool = False,
+        delete_rrset: bool = False,
+        sign_keyring: dict[dns.name.Name, dns.tsig.Key] | None = None,
+    ) -> bytes:
+        u = dns.update.UpdateMessage(
+            zone,
+            keyname=dns.name.from_text(KEYNAME),
+            keyring=sign_keyring if sign_keyring is not None else keyring,
+            keyalgorithm=dns.tsig.HMAC_SHA256,
+        )
+        if delete_rrset:
+            u.delete(record, "TXT")
+        elif delete:
+            u.delete(record, "TXT", value)
+        else:
+            u.add(record, 300, "TXT", value)
+        return u.to_wire()
+
+    return _make
+
+
+@pytest.fixture
+def make_unsigned_update() -> UpdateBuilder:
+    def _make(
+        zone: str = "example.com.",
+        record: str = "_acme-challenge.example.com.",
+        value: str = "token-value-abc",
+        *,
+        delete: bool = False,
+    ) -> bytes:
+        u = dns.update.UpdateMessage(zone)
+        if delete:
+            u.delete(record, "TXT", value)
+        else:
+            u.add(record, 300, "TXT", value)
+        return u.to_wire()
+
+    return _make
