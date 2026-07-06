@@ -34,10 +34,15 @@ from enum import Enum
 import dns.name
 import dns.rdataclass
 import dns.rdatatype
+import dns.rdtypes.ANY.TXT
 import dns.rrset
 import dns.update
 
 from astropath.providers.base import Provider
+
+# ACME DNS-01 tokens are a 43-char base64url SHA-256 digest; a TXT
+# character-string is bounded to 255 octets on the wire regardless.
+_MAX_TXT_LEN = 255
 
 
 class ZoneResolutionError(ValueError):
@@ -143,3 +148,42 @@ def validate_write_surface(
     except ValueError as exc:
         raise WriteSurfaceViolation(str(exc)) from exc
     return action, rrset
+
+
+def normalize_txt_values(
+    rrset: dns.rrset.RRset, action: Action, *, allow_multivalue: bool = False
+) -> list[str]:
+    """Validate and normalize the TXT rdata to raw token strings (SPEC §4.2).
+
+    Strips DNS TXT wire/string quoting (dnspython stores TXT as one or more
+    character-strings) to the raw token the provider expects. Enforces: exactly
+    one value for single-value providers, non-empty, ``<= 255`` chars. A
+    class-ANY cleanup (delete the whole rrset) legitimately carries no value and
+    yields an empty list.
+    """
+    rdatas = list(rrset)
+    if not rdatas:
+        if action is Action.CLEANUP:
+            return []  # delete-entire-rrset: no value carried
+        raise WriteSurfaceViolation("present requires a TXT value")
+    if len(rdatas) > 1 and not allow_multivalue:
+        raise WriteSurfaceViolation(
+            f"multiple TXT values not permitted for a single-value provider "
+            f"(got {len(rdatas)})"
+        )
+
+    values: list[str] = []
+    for rdata in rdatas:
+        if not isinstance(rdata, dns.rdtypes.ANY.TXT.TXT):
+            raise WriteSurfaceViolation("rrset rdata is not TXT")
+        raw = b"".join(rdata.strings)  # normalize quoting -> raw token bytes
+        try:
+            token = raw.decode("ascii")
+        except UnicodeDecodeError as exc:
+            raise WriteSurfaceViolation("TXT value is not ASCII") from exc
+        if not token:
+            raise WriteSurfaceViolation("empty TXT value")
+        if len(token) > _MAX_TXT_LEN:
+            raise WriteSurfaceViolation(f"TXT value exceeds {_MAX_TXT_LEN} characters")
+        values.append(token)
+    return values

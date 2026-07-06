@@ -25,6 +25,9 @@ from typing import Any
 
 import dns.message
 import dns.name
+import dns.rdataclass
+import dns.rdatatype
+import dns.rrset
 import dns.update
 import pytest
 from pydantic import BaseModel
@@ -35,6 +38,7 @@ from astropath.data_plane.dispatcher import (
     RoutingTable,
     WriteSurfaceViolation,
     classify_action,
+    normalize_txt_values,
     validate_write_surface,
     zone_from_message,
 )
@@ -202,3 +206,71 @@ def test_write_surface_rejects_mixed_rrsets() -> None:
     route = _route(FakeProvider())
     with pytest.raises(WriteSurfaceViolation):
         validate_write_surface(_mixed_update(), route)
+
+
+# --------------------------------------------------------------------------- #
+# T-M1-16: ACME TXT validation + quote normalization (MED-9)
+# --------------------------------------------------------------------------- #
+def _txt_rrset(text: str) -> dns.rrset.RRset:
+    """Build a TXT rrset directly (to reach shapes UpdateMessage.add refuses)."""
+    return dns.rrset.from_text("_acme-challenge.example.com.", 300, "IN", "TXT", text)
+
+
+def test_normalize_present_returns_raw_token() -> None:
+    rrset = _parsed_update(value="tokenABC123").update[0]
+    assert normalize_txt_values(rrset, Action.PRESENT) == ["tokenABC123"]
+
+
+def test_normalize_strips_txt_quoting() -> None:
+    # dnspython represents TXT as quoted char-strings; normalization returns raw.
+    rrset = _txt_rrset('"tokenABC123"')
+    assert normalize_txt_values(rrset, Action.PRESENT) == ["tokenABC123"]
+
+
+def test_normalize_delete_specific_value() -> None:
+    rrset = _parsed_update(delete=True, value="tok").update[0]
+    assert normalize_txt_values(rrset, Action.CLEANUP) == ["tok"]
+
+
+def test_normalize_delete_rrset_yields_empty() -> None:
+    rrset = _parsed_update(delete_rrset=True).update[0]
+    assert normalize_txt_values(rrset, Action.CLEANUP) == []
+
+
+def test_normalize_rejects_multi_value() -> None:
+    # One rrset carrying two TXT rdata (>1 value on a single-value provider).
+    rrset = dns.rrset.from_text(
+        "_acme-challenge.example.com.", 300, "IN", "TXT", '"val1"', '"val2"'
+    )
+    with pytest.raises(WriteSurfaceViolation):
+        normalize_txt_values(rrset, Action.PRESENT)
+
+
+def test_normalize_allows_multi_value_when_opted_in() -> None:
+    rrset = dns.rrset.from_text(
+        "_acme-challenge.example.com.", 300, "IN", "TXT", '"val1"', '"val2"'
+    )
+    assert sorted(
+        normalize_txt_values(rrset, Action.PRESENT, allow_multivalue=True)
+    ) == ["val1", "val2"]
+
+
+def test_normalize_rejects_empty_value() -> None:
+    with pytest.raises(WriteSurfaceViolation):
+        normalize_txt_values(_txt_rrset('""'), Action.PRESENT)
+
+
+def test_normalize_rejects_oversized_value() -> None:
+    oversized = '"' + "a" * 255 + '" "' + "b" * 255 + '"'  # 510 joined
+    with pytest.raises(WriteSurfaceViolation):
+        normalize_txt_values(_txt_rrset(oversized), Action.PRESENT)
+
+
+def test_normalize_present_requires_value() -> None:
+    empty_rrset = dns.rrset.RRset(
+        dns.name.from_text("_acme-challenge.example.com."),
+        dns.rdataclass.IN,
+        dns.rdatatype.TXT,
+    )
+    with pytest.raises(WriteSurfaceViolation):
+        normalize_txt_values(empty_rrset, Action.PRESENT)
