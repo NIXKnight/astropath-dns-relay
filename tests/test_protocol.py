@@ -23,6 +23,7 @@ from __future__ import annotations
 import struct
 from collections.abc import Callable
 
+import dns.message
 import dns.name
 import dns.rcode
 import dns.tsig
@@ -94,3 +95,37 @@ async def test_signed_update_is_dispatched(
     assert rcode_of(reply) == dns.rcode.NOERROR
     assert len(dispatcher.calls) == 1
     assert isinstance(dispatcher.calls[0], dns.update.UpdateMessage)
+
+
+def _signed_query(keyring: Keyring, keyname: str, rdtype: str = "SOA") -> bytes:
+    query = dns.message.make_query("example.com.", rdtype)
+    query.use_tsig(keyring, keyname=dns.name.from_text(keyname))
+    return query.to_wire()
+
+
+async def test_non_update_opcode_refused_and_not_dispatched(
+    keyring: Keyring,
+    keyname: str,
+    metrics: DataPlaneMetrics,
+) -> None:
+    """T-M1-07: a signed SOA QUERY is REFUSED, never dispatched (no SOA in M1)."""
+    dispatcher = FakeDispatcher()
+
+    reply = await handle_query(
+        _signed_query(keyring, keyname),
+        keyring,
+        dispatcher,
+        source="10.0.0.1",
+        metrics=metrics,
+    )
+
+    assert reply is not None
+    assert rcode_of(reply) == dns.rcode.REFUSED
+    assert dispatcher.calls == []
+
+
+def test_protocol_module_has_no_soa_handler() -> None:
+    """No SOA-answering symbol exists in the pipeline (SPEC §3.7, HIGH-4)."""
+    import astropath.data_plane.protocol as protocol
+
+    assert not any("soa" in name.lower() for name in dir(protocol))

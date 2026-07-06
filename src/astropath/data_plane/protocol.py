@@ -89,6 +89,10 @@ async def handle_query(
         metrics.record_tsig_failure(TSIG_ABSENT)
         return _reply(msg, dns.rcode.NOTAUTH)  # unsigned -> plain NOTAUTH, no dispatch
 
+    # Opcode routing (SPEC §3.7, HIGH-4): UPDATE is dispatched; QUERY and every
+    # other opcode get REFUSED. There is deliberately NO SOA answering in M1 —
+    # cert-manager's FindZoneByFqdn SOA probe goes to the recursive resolvers,
+    # never to astropath, so a half-correct SOA handler would be harmful.
     if msg.opcode() != dns.opcode.UPDATE:
         return _reply(msg, dns.rcode.REFUSED)  # non-UPDATE -> REFUSED (signed)
 
