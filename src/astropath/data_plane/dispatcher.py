@@ -27,10 +27,60 @@ SERVFAIL; success maps to NOERROR (SPEC §3.6).
 
 from __future__ import annotations
 
+from collections.abc import Iterable
+from dataclasses import dataclass
 from enum import Enum
 
+import dns.name
 import dns.rdataclass
 import dns.rrset
+import dns.update
+
+from astropath.providers.base import Provider
+
+
+class ZoneResolutionError(ValueError):
+    """The UPDATE has no usable ZONE section."""
+
+
+def zone_from_message(msg: dns.update.UpdateMessage) -> dns.name.Name:
+    """Read the target zone from the parsed UPDATE ZONE section (SPEC §3.9).
+
+    The zone is the owner of the single ZONE-section rrset, canonicalized
+    (lower-case, absolute) — NOT re-derived from the challenge FQDN.
+    """
+    if not msg.zone:
+        raise ZoneResolutionError("UPDATE message has no ZONE section")
+    return msg.zone[0].name.canonicalize()
+
+
+@dataclass(frozen=True)
+class Route:
+    """A configured zone → provider mapping (SPEC §6.1 Domain, in-memory)."""
+
+    zone: dns.name.Name  # canonical
+    provider: Provider
+    record_name: dns.name.Name  # canonical _acme-challenge.<zone>. handle
+
+
+class RoutingTable:
+    """In-memory zone → :class:`Route` map with longest-suffix matching (§3.9)."""
+
+    def __init__(self, routes: Iterable[Route]) -> None:
+        self._by_zone: dict[dns.name.Name, Route] = {r.zone: r for r in routes}
+
+    def match(self, zone: dns.name.Name) -> Route | None:
+        """Return the longest configured zone that equals or is a parent of
+        ``zone``; ``None`` when no configured zone covers it (→ REFUSED)."""
+        candidate = zone
+        while True:
+            route = self._by_zone.get(candidate)
+            if route is not None:
+                return route
+            try:
+                candidate = candidate.parent()
+            except dns.name.NoParent:
+                return None
 
 
 class Action(Enum):

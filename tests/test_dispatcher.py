@@ -20,23 +20,85 @@
 
 from __future__ import annotations
 
-import dns.message
-import dns.update
+from collections.abc import Mapping
+from typing import Any
 
-from astropath.data_plane.dispatcher import Action, classify_action
+import dns.message
+import dns.name
+import dns.update
+from pydantic import BaseModel
+
+from astropath.data_plane.dispatcher import (
+    Action,
+    Route,
+    RoutingTable,
+    classify_action,
+    zone_from_message,
+)
+from astropath.providers.base import Provider, ProviderError
+
+
+class _FakeBase(Provider):
+    """Provider base with the ``type`` attribute left annotation-only."""
+
+    @classmethod
+    def config_schema(cls) -> type[BaseModel]:
+        return BaseModel
+
+    @classmethod
+    def from_config(cls, config: Mapping[str, Any], *, http: Any) -> Provider:
+        return cls()
+
+    async def validate(self) -> None:
+        return None
+
+
+class FakeProvider(_FakeBase):
+    """Records present/cleanup calls; optionally raises ProviderError."""
+
+    type = "fake"
+
+    def __init__(self, *, fail: bool = False) -> None:
+        self.fail = fail
+        self.present_calls: list[tuple[str, str, tuple[str, ...]]] = []
+        self.cleanup_calls: list[tuple[str, str, tuple[str, ...]]] = []
+
+    async def present(self, zone: str, record_name: str, values: list[str]) -> None:
+        if self.fail:
+            raise ProviderError("present boom")
+        self.present_calls.append((zone, record_name, tuple(values)))
+
+    async def cleanup(self, zone: str, record_name: str, values: list[str]) -> None:
+        if self.fail:
+            raise ProviderError("cleanup boom")
+        self.cleanup_calls.append((zone, record_name, tuple(values)))
+
+
+def _route(provider: Provider, zone: str = "example.com.") -> Route:
+    return Route(
+        zone=dns.name.from_text(zone).canonicalize(),
+        provider=provider,
+        record_name=dns.name.from_text(f"_acme-challenge.{zone}").canonicalize(),
+    )
 
 
 def _parsed_update(
-    *, delete: bool = False, delete_rrset: bool = False
+    *,
+    delete: bool = False,
+    delete_rrset: bool = False,
+    zone: str = "example.com.",
+    record: str | None = None,
+    value: str = "tok",
+    rdtype: str = "TXT",
 ) -> dns.update.UpdateMessage:
-    u = dns.update.UpdateMessage("example.com.")
-    record = "_acme-challenge.example.com."
+    owner = record if record is not None else f"_acme-challenge.{zone}"
+    u = dns.update.UpdateMessage(zone)
     if delete_rrset:
-        u.delete(record, "TXT")
+        u.delete(owner, rdtype)
     elif delete:
-        u.delete(record, "TXT", "tok")
+        u.delete(owner, rdtype, value)
     else:
-        u.add(record, 300, "TXT", "tok")
+        u.add(owner, 300, rdtype, value)
     msg = dns.message.from_wire(u.to_wire())
     assert isinstance(msg, dns.update.UpdateMessage)
     return msg
@@ -57,3 +119,36 @@ def test_classify_delete_entire_rrset_is_cleanup() -> None:
     """Class-ANY delete routes to CLEANUP."""
     rrset = _parsed_update(delete_rrset=True).update[0]
     assert classify_action(rrset) is Action.CLEANUP
+
+
+# --------------------------------------------------------------------------- #
+# T-M1-09: zone from ZONE section + longest-match routing
+# --------------------------------------------------------------------------- #
+def test_zone_from_message_reads_zone_section() -> None:
+    msg = _parsed_update(zone="Example.COM.")
+    assert zone_from_message(msg) == dns.name.from_text("example.com.")  # canonical
+
+
+def test_routing_exact_match() -> None:
+    provider = FakeProvider()
+    table = RoutingTable([_route(provider, "example.com.")])
+    route = table.match(dns.name.from_text("example.com."))
+    assert route is not None
+    assert route.provider is provider
+
+
+def test_routing_longest_suffix_match() -> None:
+    table = RoutingTable(
+        [
+            _route(FakeProvider(), "example.com."),
+            _route(FakeProvider(), "sub.example.com."),
+        ]
+    )
+    matched = table.match(dns.name.from_text("sub.example.com."))
+    assert matched is not None
+    assert matched.zone == dns.name.from_text("sub.example.com.")
+
+
+def test_routing_unknown_zone_returns_none() -> None:
+    table = RoutingTable([_route(FakeProvider(), "example.com.")])
+    assert table.match(dns.name.from_text("other.org.")) is None
