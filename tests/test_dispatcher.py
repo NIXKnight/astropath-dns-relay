@@ -20,6 +20,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Mapping
 from typing import Any
 
@@ -369,3 +370,52 @@ async def test_dispatch_provider_error_servfail() -> None:
         )
         == 1.0
     )
+
+
+# --------------------------------------------------------------------------- #
+# T-M1-14: per-FQDN serialization (HE single-value)
+# --------------------------------------------------------------------------- #
+class SlowProvider(_FakeBase):
+    """Tracks peak concurrency inside present/cleanup to detect overlap."""
+
+    type = "slow"
+
+    def __init__(self) -> None:
+        self.active = 0
+        self.max_active = 0
+
+    async def _work(self) -> None:
+        self.active += 1
+        self.max_active = max(self.max_active, self.active)
+        await asyncio.sleep(0)  # yield to let a racing task interleave
+        await asyncio.sleep(0)
+        self.active -= 1
+
+    async def present(self, zone: str, record_name: str, values: list[str]) -> None:
+        await self._work()
+
+    async def cleanup(self, zone: str, record_name: str, values: list[str]) -> None:
+        await self._work()
+
+
+async def test_same_fqdn_pushes_are_serialized() -> None:
+    provider = SlowProvider()
+    dispatcher, _reg = _dispatcher(provider)
+    # Two concurrent challenges to the SAME _acme-challenge record.
+    await asyncio.gather(
+        dispatcher.dispatch(_parsed_update(value="a"), source="x"),
+        dispatcher.dispatch(_parsed_update(value="b"), source="y"),
+    )
+    assert provider.max_active == 1  # never overlapped
+
+
+async def test_different_fqdns_run_concurrently() -> None:
+    provider = SlowProvider()
+    reg = CollectorRegistry()
+    table = RoutingTable([_route(provider, "a.com."), _route(provider, "b.com.")])
+    dispatcher = Dispatcher(table, DataPlaneMetrics(registry=reg))
+    await asyncio.gather(
+        dispatcher.dispatch(_parsed_update(zone="a.com."), source="x"),
+        dispatcher.dispatch(_parsed_update(zone="b.com."), source="y"),
+    )
+    assert provider.max_active == 2  # distinct records are not serialized

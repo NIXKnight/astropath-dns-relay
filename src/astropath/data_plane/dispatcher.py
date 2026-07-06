@@ -27,6 +27,7 @@ SERVFAIL; success maps to NOERROR (SPEC §3.6).
 
 from __future__ import annotations
 
+import asyncio
 import time
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
@@ -212,6 +213,16 @@ class Dispatcher:
         self._routing = routing
         self._metrics = metrics
         self._clock = clock
+        # One lock per record owner (SPEC §3.13): HE holds a single value per
+        # dynamic record, so overlapping pushes to one FQDN must not clobber.
+        self._locks: dict[str, asyncio.Lock] = {}
+
+    def _lock_for(self, record_key: str) -> asyncio.Lock:
+        lock = self._locks.get(record_key)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._locks[record_key] = lock
+        return lock
 
     async def dispatch(
         self, msg: dns.update.UpdateMessage, *, source: str
@@ -232,7 +243,11 @@ class Dispatcher:
         except WriteSurfaceViolation:
             return dns.rcode.REFUSED
 
-        return await self._invoke_provider(route, action, rrset.name.to_text(), values)
+        record_name = rrset.name.to_text()
+        # Serialize per FQDN so concurrent challenges to one record queue instead
+        # of racing the provider's single-value write (SPEC §3.13, HIGH-9).
+        async with self._lock_for(rrset.name.canonicalize().to_text()):
+            return await self._invoke_provider(route, action, record_name, values)
 
     async def _invoke_provider(
         self,
