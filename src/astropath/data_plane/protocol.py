@@ -108,6 +108,15 @@ def _extract_tsig_context(wire: bytes) -> _TsigWire | None:
     return _TsigWire(id=msg_id, opcode=(flags >> 11) & 0xF, keyname=keyname, mac=mac)
 
 
+def _reply_from_ctx(ctx: _TsigWire, rcode: dns.rcode.Rcode) -> dns.message.QueryMessage:
+    """Build a bare response echoing the request id + opcode with ``rcode``."""
+    response = dns.message.QueryMessage(id=ctx.id)
+    response.flags = dns.flags.QR
+    response.set_opcode(dns.opcode.Opcode(ctx.opcode))
+    response.set_rcode(rcode)
+    return response
+
+
 def _plain_error_reply(wire: bytes, rcode: dns.rcode.Rcode) -> bytes | None:
     """Build an unsigned reply preserving the request id and opcode (§3.12).
 
@@ -117,10 +126,35 @@ def _plain_error_reply(wire: bytes, rcode: dns.rcode.Rcode) -> bytes | None:
     ctx = _extract_tsig_context(wire)
     if ctx is None:
         return None
-    response = dns.message.QueryMessage(id=ctx.id)
-    response.flags = dns.flags.QR
-    response.set_opcode(dns.opcode.Opcode(ctx.opcode))
-    response.set_rcode(rcode)
+    return _reply_from_ctx(ctx, rcode).to_wire()
+
+
+def _signed_error_reply(
+    wire: bytes,
+    keyring: dict[dns.name.Name, dns.tsig.Key],
+    rcode: dns.rcode.Rcode,
+    *,
+    tsig_error: int,
+) -> bytes | None:
+    """Build a TSIG-signed error reply (SPEC §3.5).
+
+    from_wire raised, so no keyring-bound query exists — the id/keyname/mac are
+    recovered from the wire and the reply is signed manually with the server's
+    Key (bound algorithm), carrying the TSIG error field (16/17/18). Falls back
+    to an unsigned reply when the key is unrecoverable; drops if no id.
+    """
+    ctx = _extract_tsig_context(wire)
+    if ctx is None:
+        return None
+    if ctx.keyname is None or ctx.mac is None:
+        return _reply_from_ctx(ctx, rcode).to_wire()
+    key = keyring.get(ctx.keyname)
+    if key is None:
+        return _reply_from_ctx(ctx, rcode).to_wire()
+
+    response = _reply_from_ctx(ctx, rcode)
+    response.use_tsig(key, fudge=300, original_id=ctx.id, tsig_error=tsig_error)
+    response.request_mac = ctx.mac  # digest covers the client's request MAC
     return response.to_wire()
 
 
@@ -171,13 +205,19 @@ async def handle_query(
         return _plain_error_reply(wire, dns.rcode.NOTAUTH)  # unknown key: cannot sign
     except dns.tsig.BadSignature:
         metrics.record_tsig_failure(TSIG_BADSIG)
-        return _plain_error_reply(wire, dns.rcode.NOTAUTH)
+        return _signed_error_reply(
+            wire, keyring, dns.rcode.NOTAUTH, tsig_error=dns.rcode.BADSIG
+        )
     except dns.tsig.BadTime:
         metrics.record_tsig_failure(TSIG_BADTIME)
-        return _plain_error_reply(wire, dns.rcode.NOTAUTH)
+        return _signed_error_reply(
+            wire, keyring, dns.rcode.NOTAUTH, tsig_error=dns.rcode.BADTIME
+        )
     except (dns.tsig.BadKey, dns.tsig.BadAlgorithm):
         metrics.record_tsig_failure(TSIG_BADKEY)
-        return _plain_error_reply(wire, dns.rcode.NOTAUTH)
+        return _signed_error_reply(
+            wire, keyring, dns.rcode.NOTAUTH, tsig_error=dns.rcode.BADKEY
+        )
 
     # Auth gate (BLOCKER-1): from_wire does NOT raise on an ABSENT TSIG.
     if not msg.had_tsig:

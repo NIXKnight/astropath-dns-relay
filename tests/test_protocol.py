@@ -28,8 +28,12 @@ import dns.message
 import dns.name
 import dns.opcode
 import dns.rcode
+import dns.rdata
+import dns.rdatatype
+import dns.rdtypes.ANY.TSIG
 import dns.tsig
 import dns.update
+import dns.wire
 import pytest
 from prometheus_client import CollectorRegistry
 
@@ -275,6 +279,100 @@ async def test_bad_time_notauth_and_badtime_metric(
         == 1.0
     )
     assert reg.get_sample_value("astropath_tsig_badtime_total") == 1.0
+
+
+def _reply_tsig(wire: bytes) -> dns.rdtypes.ANY.TSIG.TSIG | None:
+    """Extract the reply's TSIG rdata (to read its error field + MAC)."""
+    parser = dns.wire.Parser(wire)
+    _id, _flags, qd, an, ns, ar = struct.unpack("!HHHHHH", parser.get_bytes(12))
+    for _ in range(qd):
+        parser.get_name()
+        parser.get_struct("!HH")
+    for _ in range(an + ns + ar):
+        parser.get_name()
+        rdtype, rdclass, _ttl, rdlen = parser.get_struct("!HHIH")
+        with parser.restrict_to(rdlen):
+            if rdtype == dns.rdatatype.TSIG:
+                rdata = dns.rdata.from_wire_parser(rdclass, rdtype, parser, None)
+                assert isinstance(rdata, dns.rdtypes.ANY.TSIG.TSIG)
+                return rdata
+            parser.get_bytes(rdlen)
+    return None
+
+
+@pytest.mark.parametrize(
+    ("algorithm", "sign_secret", "expected_error"),
+    [
+        (dns.tsig.HMAC_SHA256, _MISMATCHED_SECRET, dns.rcode.BADSIG),  # bad MAC
+        (dns.tsig.HMAC_SHA512, _MISMATCHED_SECRET, dns.rcode.BADKEY),  # bad algorithm
+    ],
+)
+async def test_signed_error_reply_carries_tsig_error(
+    keyring: Keyring,
+    algorithm: dns.name.Name,
+    sign_secret: str,
+    expected_error: int,
+) -> None:
+    """T-M1-05: BADSIG/BADKEY error replies are TSIG-signed with error 16/17."""
+    _reg, m = _fresh_metrics()
+    client_keyring = {
+        dns.name.from_text("cm-key."): dns.tsig.Key("cm-key.", sign_secret, algorithm)
+    }
+    wire = _client_signed_update(client_keyring, "cm-key.", algorithm)
+
+    reply = await handle_query(
+        wire, keyring, FakeDispatcher(), source="1.2.3.4", metrics=m
+    )
+    assert reply is not None
+    assert rcode_of(reply) == dns.rcode.NOTAUTH
+
+    tsig = _reply_tsig(reply)
+    assert tsig is not None  # reply is signed
+    assert tsig.error == expected_error
+    assert len(tsig.mac) == 32  # HMAC-SHA256 MAC present
+
+
+async def test_signed_badtime_reply_carries_error_18(
+    keyring: Keyring,
+    make_signed_update: UpdateBuilder,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """T-M1-05: a BADTIME reply is signed and carries TSIG error 18 (HIGH-2)."""
+    import time as _time
+
+    _reg, m = _fresh_metrics()
+    wire = make_signed_update()
+    real_time = _time.time
+    monkeypatch.setattr("dns.message.time.time", lambda: real_time() + 100_000)
+
+    reply = await handle_query(
+        wire, keyring, FakeDispatcher(), source="1.2.3.4", metrics=m
+    )
+    assert reply is not None
+    assert rcode_of(reply) == dns.rcode.NOTAUTH
+
+    tsig = _reply_tsig(reply)
+    assert tsig is not None
+    assert tsig.error == dns.rcode.BADTIME  # 18
+    assert len(tsig.mac) == 32
+
+
+async def test_unknown_key_reply_is_unsigned(keyring: Keyring) -> None:
+    """Unknown key cannot be signed (SPEC §3.6): plain NOTAUTH, no TSIG."""
+    _reg, m = _fresh_metrics()
+    other = {
+        dns.name.from_text("other-key."): dns.tsig.Key(
+            "other-key.", _MISMATCHED_SECRET, dns.tsig.HMAC_SHA256
+        )
+    }
+    wire = _client_signed_update(other, "other-key.", dns.tsig.HMAC_SHA256)
+
+    reply = await handle_query(
+        wire, keyring, FakeDispatcher(), source="1.2.3.4", metrics=m
+    )
+    assert reply is not None
+    assert rcode_of(reply) == dns.rcode.NOTAUTH
+    assert _reply_tsig(reply) is None  # no key context to sign with
 
 
 def test_peer_exception_classes_never_caught() -> None:
