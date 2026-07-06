@@ -1,0 +1,20 @@
+Third-Party Software Notices for AstropathDNSRelay
+==================================================
+
+AstropathDNSRelay is licensed under GPL-3.0-or-later (see the LICENSE file).
+
+This notice records the licenses of third-party components that are
+redistributed inside the built frontend JavaScript bundle (frontend/dist/,
+produced by `npm run build` and copied into the runtime image, per SPEC §1.5).
+
+STATUS: stub. Concrete per-dependency attributions are generated when the
+Vite/React/TypeScript SPA is scaffolded and built (TASKS T-M4-01 / T-M4-05).
+
+Python runtime dependencies are declared in pyproject.toml and locked in
+uv.lock; their license metadata is captured there and by the CI SBOM/license
+scan step (TASKS T-M6-06) and is intentionally not duplicated here.
+
+--------------------------------------------------------------------------------
+Frontend bundle third-party notices:
+    (none yet — this section is populated by the frontend build in Track M4)
+--------------------------------------------------------------------------------
