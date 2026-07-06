@@ -63,6 +63,15 @@ def _signed_update(keyring: Keyring, keyname: str) -> dns.update.UpdateMessage:
     return q
 
 
+def _big_signed_update(keyring: Keyring, keyname: str) -> dns.update.UpdateMessage:
+    q = _signed_update(keyring, keyname)
+    i = 0
+    while len(q.to_wire()) <= 600:  # push comfortably over the 512-byte UDP limit
+        q.present(f"pad{i}.example.com.", "A")  # prerequisite padding (ignored)
+        i += 1
+    return q
+
+
 @pytest.fixture
 async def running_server(keyring: Keyring) -> AsyncIterator[Rfc2136Server]:
     server = Rfc2136Server(
@@ -101,3 +110,40 @@ async def test_udp_unsigned_update_is_notauth(running_server: Rfc2136Server) -> 
         dns.query.udp, unsigned, "127.0.0.1", 5.0, running_server.port
     )
     assert response.rcode() == dns.rcode.NOTAUTH
+
+
+async def test_tcp_large_signed_update_round_trip(
+    running_server: Rfc2136Server, keyring: Keyring, keyname: str
+) -> None:
+    query = _big_signed_update(keyring, keyname)
+    assert len(query.to_wire()) > 512  # exceeds the UDP payload limit -> needs TCP
+    response = await asyncio.to_thread(
+        dns.query.tcp, query, "127.0.0.1", 5.0, running_server.port
+    )
+    assert response.rcode() == dns.rcode.NOERROR
+    assert response.had_tsig is True
+
+
+async def test_malformed_tcp_message_closes_without_crash(
+    running_server: Rfc2136Server, keyring: Keyring, keyname: str
+) -> None:
+    import struct
+
+    reader, writer = await asyncio.open_connection("127.0.0.1", running_server.port)
+    writer.write(struct.pack("!H", 20) + b"\xff" * 20)  # framed garbage
+    await writer.drain()
+    with contextlib.suppress(Exception):
+        await asyncio.wait_for(reader.read(1), timeout=1.0)  # server closes -> EOF
+    writer.close()
+    with contextlib.suppress(Exception):
+        await writer.wait_closed()
+
+    # The listener survives: a subsequent valid query still succeeds.
+    response = await asyncio.to_thread(
+        dns.query.udp,
+        _signed_update(keyring, keyname),
+        "127.0.0.1",
+        5.0,
+        running_server.port,
+    )
+    assert response.rcode() == dns.rcode.NOERROR

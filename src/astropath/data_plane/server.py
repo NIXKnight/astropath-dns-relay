@@ -21,17 +21,20 @@
 The UDP ``datagram_received`` callback is **synchronous** and must never await
 (SPEC §3.11 / §2.3): it hands each packet to ``asyncio.create_task`` and returns
 immediately, so provider HTTP calls never block the event loop inside the
-callback. TCP framing (RFC7766 2-byte length prefix) is added in T-M1-12.
+callback. TCP is mandatory (TSIG-signed UPDATEs can exceed 512 bytes) with the
+RFC7766 2-byte big-endian length prefix framing.
 
 The host/port are configurable so an external contract-test harness (miekg/dns)
-can target the same listener. Malformed packets are dropped; the listener never
-crashes on bad input (SPEC §3.12).
+can target the same listener. Malformed packets are dropped on UDP / the TCP
+connection is closed; the listener never crashes on bad input (SPEC §3.12).
 """
 
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
+import struct
 from typing import Any
 
 import dns.name
@@ -90,7 +93,7 @@ class _UdpProtocol(asyncio.DatagramProtocol):
 
 
 class Rfc2136Server:
-    """RFC2136 UDP (and, from T-M1-12, TCP) listener for TSIG-signed UPDATE."""
+    """RFC2136 UDP + TCP listener for TSIG-signed DNS UPDATE (SPEC §3)."""
 
     def __init__(
         self,
@@ -107,6 +110,7 @@ class Rfc2136Server:
         self._host = host
         self._port = port
         self._udp_transport: asyncio.DatagramTransport | None = None
+        self._tcp_server: asyncio.Server | None = None
 
     @property
     def port(self) -> int:
@@ -114,7 +118,7 @@ class Rfc2136Server:
         return self._port
 
     async def serve(self, *, ready: asyncio.Event | None = None) -> None:
-        """Bind the UDP listener and serve until cancelled (supervisor-driven)."""
+        """Bind UDP + TCP and serve until cancelled (supervisor-driven)."""
         loop = asyncio.get_running_loop()
         self._udp_transport, _protocol = await loop.create_datagram_endpoint(
             lambda: _UdpProtocol(self._keyring, self._dispatcher, self._metrics),
@@ -124,10 +128,15 @@ class Rfc2136Server:
         if sockname is not None:
             self._port = int(sockname[1])
 
+        # Bind TCP on the same (now-resolved) port for >512-byte UPDATEs.
+        self._tcp_server = await asyncio.start_server(
+            self._handle_tcp, self._host, self._port
+        )
+
         if ready is not None:
             ready.set()
         try:
-            await asyncio.Event().wait()  # serve until the task is cancelled
+            await self._tcp_server.serve_forever()
         finally:
             self.close()
 
@@ -135,3 +144,38 @@ class Rfc2136Server:
         if self._udp_transport is not None:
             self._udp_transport.close()
             self._udp_transport = None
+        if self._tcp_server is not None:
+            self._tcp_server.close()
+            self._tcp_server = None
+
+    async def _handle_tcp(
+        self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
+    ) -> None:
+        peer = writer.get_extra_info("peername")
+        source = str(peer[0]) if peer else "?"
+        try:
+            while True:
+                header = await reader.readexactly(2)  # RFC7766 length prefix
+                (length,) = struct.unpack("!H", header)
+                payload = await reader.readexactly(length)
+                try:
+                    reply = await handle_query(
+                        payload,
+                        self._keyring,
+                        self._dispatcher,
+                        source=source,
+                        metrics=self._metrics,
+                    )
+                except Exception:
+                    log.exception("tcp_handler_error", extra={"source": source})
+                    break  # close the connection on an unexpected error
+                if reply is None:
+                    break  # malformed -> close the connection
+                writer.write(struct.pack("!H", len(reply)) + reply)
+                await writer.drain()
+        except asyncio.IncompleteReadError:
+            pass  # peer closed mid-message
+        finally:
+            writer.close()
+            with contextlib.suppress(Exception):
+                await writer.wait_closed()
