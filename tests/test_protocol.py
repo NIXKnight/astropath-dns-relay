@@ -25,6 +25,7 @@ from collections.abc import Callable
 
 import dns.message
 import dns.name
+import dns.opcode
 import dns.rcode
 import dns.tsig
 import dns.update
@@ -129,3 +130,37 @@ def test_protocol_module_has_no_soa_handler() -> None:
     import astropath.data_plane.protocol as protocol
 
     assert not any("soa" in name.lower() for name in dir(protocol))
+
+
+async def test_success_reply_is_tsig_signed(
+    keyring: Keyring,
+    keyname: str,
+    metrics: DataPlaneMetrics,
+) -> None:
+    """T-M1-04: the success reply auto-signs; a client verifies it.
+
+    Built inline so the client message retains its request MAC, which the client
+    needs to verify the reply TSIG.
+    """
+    client = dns.update.UpdateMessage(
+        "example.com.",
+        keyname=dns.name.from_text(keyname),
+        keyring=keyring,
+        keyalgorithm=dns.tsig.HMAC_SHA256,
+    )
+    client.add("_acme-challenge.example.com.", 300, "TXT", "tok")
+    wire = client.to_wire()
+
+    reply = await handle_query(
+        wire,
+        keyring,
+        FakeDispatcher(rcode=dns.rcode.NOERROR),
+        source="10.0.0.1",
+        metrics=metrics,
+    )
+    assert reply is not None
+
+    verified = dns.message.from_wire(reply, keyring=keyring, request_mac=client.mac)
+    assert verified.had_tsig is True  # reply carries a valid TSIG
+    assert verified.opcode() == dns.opcode.UPDATE  # opcode preserved
+    assert verified.rcode() == dns.rcode.NOERROR
