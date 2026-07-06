@@ -16,4 +16,13 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-"""DNS provider backends and the provider registry (SPEC §5)."""
+"""DNS provider backends and the provider registry (SPEC §5).
+
+Importing this package imports every built-in provider module so their
+``@register`` decorators populate :data:`astropath.providers.base.REGISTRY`
+(the startup fail-fast in T-M1-26 relies on the registry being populated).
+"""
+
+from astropath.providers.hurricane import HurricaneProvider
+
+__all__ = ["HurricaneProvider"]
