@@ -65,6 +65,17 @@ class Settings(BaseSettings):
     session_secret: SecretStr
     """Starlette ``SessionMiddleware`` signing secret (SPEC §8.2)."""
 
+    # --- M1 data-plane bootstrap (SPEC §16) ---
+    bootstrap_path: str | None = None
+    """Path to the KEK-encrypted TOML bootstrap file that seeds the M1 data plane.
+
+    Required by the M1 data plane (``main()`` fail-fasts if unset, T-M1-26); the
+    M2 database supersedes it as the source of keyring/routing.
+    """
+
+    metrics_port: int = 9090
+    """Prometheus exposition port for the interim data-plane metrics server (SPEC §11.1)."""
+
     # --- Non-secret runtime configuration (SPEC §10.2) ---
     forwarded_allow_ips: str = "127.0.0.1"
     """nginx source IP/CIDR for uvicorn ``forwarded_allow_ips`` (SPEC §8.6)."""
