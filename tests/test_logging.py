@@ -54,9 +54,11 @@ def test_redaction_filter_redacts_secret_extra() -> None:
     record.record_name = "_acme-challenge.example.com"  # not secret-shaped
 
     assert flt.filter(record) is True
-    assert record.password == REDACTED
-    assert record.session_secret == REDACTED
-    assert record.record_name == "_acme-challenge.example.com"
+    # dynamically attached `extra=`-style attributes (see RedactionFilter); the
+    # stdlib LogRecord type does not declare them, so the reads are type-ignored.
+    assert record.password == REDACTED  # type: ignore[attr-defined]
+    assert record.session_secret == REDACTED  # type: ignore[attr-defined]
+    assert record.record_name == "_acme-challenge.example.com"  # type: ignore[attr-defined]
 
 
 def test_redaction_filter_redacts_mapping_arg() -> None:

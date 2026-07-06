@@ -1,0 +1,68 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# AstropathDNSRelay — Continuous Integration (M0 skeleton, TASKS T-M0-08).
+#
+# Scope: lean quality gates only — ruff (lint), black (format check),
+# mypy (strict), and pytest with coverage, all driven by uv against the
+# committed uv.lock (`uv sync --frozen`) for reproducible installs.
+#
+# Deliberately OUT OF SCOPE here (owned by later milestones — do not add):
+#   - Postgres testcontainer + `alembic upgrade head`   (M2 / T-TEST-12)
+#   - coverage >90% enforcement                         (M6 / T-TEST-19)
+#   - vuln/license scan, SBOM, provenance, multi-arch    (M6 / T-M6-06)
+#   - image HEALTHCHECK / non-root verification          (M6 / T-M6-07)
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# Least privilege: these gates only read the repository. No secrets are used.
+permissions:
+  contents: read
+
+# Cancel superseded in-flight runs on the same ref to save runner time.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Never mutate the committed lockfile in CI: drift must fail, not auto-resolve.
+  UV_FROZEN: "1"
+
+jobs:
+  quality:
+    name: Lint, type-check, test
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v5
+
+      - name: Install uv and Python 3.11
+        uses: astral-sh/setup-uv@v8
+        with:
+          # Pin the uv tool for reproducible CI; bump alongside local upgrades.
+          version: "0.8.17"
+          # Target the declared floor (pyproject requires-python = ">=3.11");
+          # this also matches [tool.mypy] python_version = "3.11".
+          python-version: "3.11"
+          enable-cache: true
+
+      - name: Install dependencies (frozen)
+        run: uv sync --frozen
+
+      - name: Ruff (lint)
+        run: uv run ruff check .
+
+      - name: Black (format check)
+        run: uv run black --check .
+
+      - name: Mypy (strict)
+        run: uv run mypy
+
+      - name: Pytest (with coverage)
+        run: uv run pytest --cov=astropath --cov-report=term-missing
