@@ -46,11 +46,16 @@ from astropath.api.deps import (
     get_session,
     refresh_routing_cache,
 )
-from astropath.api.schemas import BackendCreate, BackendRead, BackendUpdate
+from astropath.api.schemas import (
+    BackendCreate,
+    BackendRead,
+    BackendUpdate,
+    ProviderSchemaRead,
+)
 from astropath.cache import RoutingCache
 from astropath.crypto import Kek
 from astropath.models import Backend, Domain
-from astropath.providers.base import UnknownProvider, get_provider
+from astropath.providers.base import REGISTRY, UnknownProvider, get_provider
 from astropath.store import SecretCodec, build_backend
 
 __all__ = ["router"]
@@ -129,6 +134,29 @@ async def list_backends(
     session: AsyncSession = Depends(get_session),
 ) -> Sequence[Backend]:
     return (await session.execute(select(Backend))).scalars().all()
+
+
+@router.get("/providers", response_model=list[ProviderSchemaRead])
+async def list_providers() -> list[ProviderSchemaRead]:
+    """List provider types + their config JSON Schemas (SPEC §5.2, T-M4-03).
+
+    Sourced from the module-level provider ``REGISTRY`` (importing the providers
+    package registers every built-in). Adding a provider — one file plus one
+    ``@register`` — surfaces it here automatically, so the SPA credential form
+    needs no per-provider code. Exposes only the *shape* of each config; secret
+    fields are marked ``writeOnly`` and never carry a value. Registered before the
+    ``/{backend_id}`` route so ``providers`` is not parsed as an int id.
+    """
+    return [
+        ProviderSchemaRead(
+            type=key,
+            title=cls.config_schema().__name__,
+            supports_multivalue=cls.supports_multivalue,
+            supports_delete=cls.supports_delete,
+            config_schema=cls.config_schema().model_json_schema(),
+        )
+        for key, cls in sorted(REGISTRY.items())
+    ]
 
 
 @router.get("/{backend_id}", response_model=BackendRead)

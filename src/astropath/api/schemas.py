@@ -54,6 +54,7 @@ __all__ = [
     "ChallengeEventRead",
     "DomainCreate",
     "DomainRead",
+    "ProviderSchemaRead",
     "TsigKeyCreate",
     "TsigKeyCreated",
     "TsigKeyRead",
@@ -115,6 +116,24 @@ class BackendRead(BaseModel):
     type: str
     created_at: datetime
     updated_at: datetime
+
+
+class ProviderSchemaRead(BaseModel):
+    """A provider type plus the JSON Schema of its backend config (SPEC §5.2).
+
+    Drives the SPA's dynamic credential form (T-M4-03): the same
+    ``config_schema()`` Pydantic model that validates ``POST /backends`` config is
+    surfaced here as a JSON Schema, so a new provider gets a correct UI with no
+    bespoke frontend code. Schemas describe field shape only — never any secret
+    value. Secret fields (pydantic ``SecretStr``) render as ``writeOnly`` with
+    ``format: password`` so the UI shows them as write-only password inputs.
+    """
+
+    type: str
+    title: str
+    supports_multivalue: bool
+    supports_delete: bool
+    config_schema: dict[str, Any]
 
 
 class DomainCreate(BaseModel):

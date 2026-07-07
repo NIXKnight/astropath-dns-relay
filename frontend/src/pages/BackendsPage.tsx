@@ -6,47 +6,46 @@
 import { useCallback, useState } from 'react'
 
 import { api } from '../api/client.ts'
-import type { BackendRead } from '../api/types.ts'
+import type { BackendRead, ProviderSchema } from '../api/types.ts'
+import { SchemaForm, schemaDefaults } from '../components/SchemaForm.tsx'
 import { errorMessage, formatTimestamp } from '../lib/format.ts'
 import { useResource } from '../lib/useResource.ts'
 
 export function BackendsPage(): React.JSX.Element {
-  const load = useCallback(() => api.get<BackendRead[]>('/backends'), [])
-  const { data, error, loading, reload } = useResource(load)
+  const loadBackends = useCallback(() => api.get<BackendRead[]>('/backends'), [])
+  const loadProviders = useCallback(
+    () => api.get<ProviderSchema[]>('/backends/providers'),
+    [],
+  )
+  const backends = useResource(loadBackends)
+  const providers = useResource(loadProviders)
 
   const [name, setName] = useState('')
   const [type, setType] = useState('')
-  const [configText, setConfigText] = useState('{}')
+  const [config, setConfig] = useState<Record<string, unknown>>({})
   const [formError, setFormError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
+
+  const selected = (providers.data ?? []).find((item) => item.type === type) ?? null
+
+  // Picking a provider seeds the config with that schema's declared defaults;
+  // the dynamic SchemaForm then renders one field per config property (T-M4-03).
+  function selectType(nextType: string): void {
+    setType(nextType)
+    const provider = (providers.data ?? []).find((item) => item.type === nextType)
+    setConfig(provider ? schemaDefaults(provider.config_schema) : {})
+  }
 
   async function onCreate(event: React.FormEvent): Promise<void> {
     event.preventDefault()
     setFormError(null)
-
-    let config: Record<string, unknown> = {}
-    if (configText.trim()) {
-      let parsed: unknown
-      try {
-        parsed = JSON.parse(configText)
-      } catch {
-        setFormError('Config must be valid JSON.')
-        return
-      }
-      if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
-        setFormError('Config must be a JSON object.')
-        return
-      }
-      config = parsed as Record<string, unknown>
-    }
-
     setBusy(true)
     try {
       await api.post<BackendRead>('/backends', { name, type, config })
       setName('')
       setType('')
-      setConfigText('{}')
-      reload()
+      setConfig({})
+      backends.reload()
     } catch (err) {
       setFormError(errorMessage(err))
     } finally {
@@ -60,7 +59,7 @@ export function BackendsPage(): React.JSX.Element {
     }
     try {
       await api.del(`/backends/${backend.id}`)
-      reload()
+      backends.reload()
     } catch (err) {
       window.alert(errorMessage(err))
     }
@@ -71,16 +70,20 @@ export function BackendsPage(): React.JSX.Element {
       <header className="page-head">
         <h1>Backends</h1>
         <p className="muted">
-          Provider backends hold shared config (encrypted at rest, write-only).
+          Provider backends hold shared config (encrypted at rest, write-only). The
+          credential form is generated from each provider&apos;s config schema.
         </p>
       </header>
 
       <form className="card form-grid" onSubmit={(event) => void onCreate(event)}>
         <h2>Add backend</h2>
         {formError && (
-          <p className="notice notice-error" role="alert">
+          <p className="notice notice-error field-wide" role="alert">
             {formError}
           </p>
+        )}
+        {providers.error && (
+          <p className="notice notice-error field-wide">{providers.error}</p>
         )}
         <label className="field">
           <span>Name</span>
@@ -92,24 +95,37 @@ export function BackendsPage(): React.JSX.Element {
         </label>
         <label className="field">
           <span>Type</span>
-          <input
+          <select
             value={type}
-            onChange={(event) => setType(event.target.value)}
-            placeholder="hurricane"
+            onChange={(event) => selectType(event.target.value)}
             required
-          />
+          >
+            <option value="">Select provider…</option>
+            {(providers.data ?? []).map((provider) => (
+              <option key={provider.type} value={provider.type}>
+                {provider.type}
+              </option>
+            ))}
+          </select>
         </label>
-        <label className="field field-wide">
-          <span>Config (JSON)</span>
-          <textarea
-            className="mono"
-            rows={4}
-            value={configText}
-            onChange={(event) => setConfigText(event.target.value)}
-          />
-        </label>
+
+        {selected && (
+          <>
+            <div className="field-wide divider">
+              Configuration — <code>{selected.title}</code>
+            </div>
+            <SchemaForm
+              schema={selected.config_schema}
+              values={config}
+              onChange={(field, value) =>
+                setConfig((current) => ({ ...current, [field]: value }))
+              }
+            />
+          </>
+        )}
+
         <div className="form-actions">
-          <button type="submit" className="primary" disabled={busy}>
+          <button type="submit" className="primary" disabled={busy || !type}>
             {busy ? 'Creating…' : 'Create backend'}
           </button>
         </div>
@@ -117,8 +133,8 @@ export function BackendsPage(): React.JSX.Element {
 
       <div className="card">
         <h2>Configured backends</h2>
-        {error && <p className="notice notice-error">{error}</p>}
-        {loading && !data ? (
+        {backends.error && <p className="notice notice-error">{backends.error}</p>}
+        {backends.loading && !backends.data ? (
           <p className="muted">Loading…</p>
         ) : (
           <table className="table">
@@ -132,7 +148,7 @@ export function BackendsPage(): React.JSX.Element {
               </tr>
             </thead>
             <tbody>
-              {(data ?? []).map((backend) => (
+              {(backends.data ?? []).map((backend) => (
                 <tr key={backend.id}>
                   <td>{backend.id}</td>
                   <td>{backend.name}</td>
@@ -151,7 +167,7 @@ export function BackendsPage(): React.JSX.Element {
                   </td>
                 </tr>
               ))}
-              {(data ?? []).length === 0 && (
+              {(backends.data ?? []).length === 0 && (
                 <tr>
                   <td colSpan={5} className="muted">
                     No backends yet.

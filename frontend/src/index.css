@@ -205,6 +205,26 @@ code,
   justify-content: flex-end;
 }
 
+.field-check {
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+}
+
+.field-check input {
+  width: auto;
+}
+
+.divider {
+  border-top: 1px solid var(--border);
+  padding-top: 12px;
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+}
+
 input,
 select,
 textarea {
