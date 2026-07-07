@@ -134,3 +134,111 @@ async def test_validate_requires_record_keys() -> None:
     )
     with pytest.raises(ProviderError):
         await empty.validate()
+
+
+# --------------------------------------------------------------------------- #
+# T-TEST-06 gap-fill: the four named strings, default-placeholder cleanup, and
+# single-value reject are proven above. The cases below close the remaining
+# facets of the same AC clauses — the full HE hard-error set, realistic wire
+# parsing, and the *configurable* placeholder path (constructor + from_config).
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.parametrize("body", ["!yours", "notfqdn", "abuse"])
+async def test_additional_he_error_strings_map_to_hard_error(body: str) -> None:
+    """AC 'error strings mapped': HE hard-error tokens beyond badauth/nohost are
+    mapped to a rejection (not the 'unexpected response' branch) and never leak
+    the per-record key."""
+    provider = _provider([body], [])
+    with pytest.raises(ProviderError) as exc:
+        await provider.present("example.com.", _RECORD, ["tok"])
+    message = str(exc.value)
+    assert body in message
+    assert "rejected" in message  # hard-error branch, not "unexpected response"
+    assert _DYNKEY not in message
+
+
+@pytest.mark.parametrize(
+    "body", ["good\n", "good 203.0.113.5", "nochg\n", "GOOD", "NoChg"]
+)
+async def test_success_strings_parsed_from_realistic_responses(body: str) -> None:
+    """AC 'success strings mapped': HE returns the status token with trailing
+    data / newline / arbitrary case; the first token maps case-insensitively to
+    success (no raise), matching real HE wire output."""
+    provider = _provider([body], [])
+    await provider.present("example.com.", _RECORD, ["tok"])  # no raise
+
+
+async def test_cleanup_uses_configured_placeholder() -> None:
+    """AC 'supports_delete=False placeholder path': the sentinel is configurable
+    and cleanup issues a *full* authenticated HE update (hostname + password +
+    the configured placeholder), not a delete."""
+    captured: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.append(request)
+        return httpx.Response(200, text="good")
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    provider = HurricaneProvider(
+        client, {_RECORD: _DYNKEY}, cleanup_placeholder="my-sentinel"
+    )
+    await provider.cleanup("example.com.", _RECORD, ["ignored"])
+
+    form = _form(captured[0])
+    assert form["txt"] == "my-sentinel"  # configured sentinel, not the default
+    assert form["hostname"] == "_acme-challenge.example.com"
+    assert form["password"] == _DYNKEY  # cleanup overwrite is a full HE update
+
+
+async def test_from_config_wires_cleanup_placeholder() -> None:
+    """AC 'placeholder path': config_schema/from_config drive the cleanup
+    sentinel end-to-end (config dict -> HurricaneConfig -> cleanup write)."""
+    captured: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.append(request)
+        return httpx.Response(200, text="good")
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    provider = HurricaneProvider.from_config(
+        {"cleanup_placeholder": "cfg-sentinel"}, http=client
+    )
+    provider.register_record_key(_RECORD, _DYNKEY)
+    await provider.cleanup("example.com.", _RECORD, ["ignored"])
+
+    assert _form(captured[0])["txt"] == "cfg-sentinel"
+
+
+async def test_non_200_http_status_maps_to_provider_error() -> None:
+    """AC 'error mapped': a non-200 HTTP status (transport-level, before any HE
+    body token) surfaces as a ProviderError naming the status, no key leak. A
+    non-retryable 403 is used so no app-level backoff wait is incurred."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(403, text="err")
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    provider = HurricaneProvider(client, {_RECORD: _DYNKEY})
+    with pytest.raises(ProviderError) as exc:
+        await provider.present("example.com.", _RECORD, ["tok"])
+    assert "403" in str(exc.value)
+    assert _DYNKEY not in str(exc.value)
+
+
+async def test_transport_error_maps_to_provider_error_without_leaking() -> None:
+    """AC 'error mapped': an httpx transport failure becomes a ProviderError
+    whose message carries only the exception *type* — never the endpoint URL or
+    the per-record credential."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("connection refused")
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    provider = HurricaneProvider(client, {_RECORD: _DYNKEY})
+    with pytest.raises(ProviderError) as exc:
+        await provider.present("example.com.", _RECORD, ["tok"])
+    message = str(exc.value)
+    assert "ConnectError" in message
+    assert _DYNKEY not in message
+    assert "dyn.dns.he.net" not in message  # endpoint not echoed either
