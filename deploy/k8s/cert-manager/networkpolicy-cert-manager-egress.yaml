@@ -1,0 +1,100 @@
+# AstropathDNSRelay -- NetworkPolicy: cert-manager controller egress (EXAMPLE).
+# Task: T-DEPLOY-05. SPEC 14.7.
+#
+# For clusters running DEFAULT-DENY egress. It allow-lists exactly what DNS-01
+# issuance against the AstropathDNSRelay gateway needs. If your cluster does NOT
+# default-deny egress, this policy is optional -- a NetworkPolicy only restricts
+# pods it selects.
+#
+# The four DNS-01-specific egress needs (SPEC 14.7):
+#   * gateway <dns-port> on BOTH UDP and TCP -- the signed RFC2136 UPDATE.
+#     TCP is mandatory: TSIG-signed UPDATEs can exceed 512 B and fall back to TCP.
+#   * public resolvers 1.1.1.1 / 8.8.8.8 :53 (UDP+TCP) -- the DNS-01 self-check;
+#     MUST match the --dns01-recursive-nameservers flags (helm-values.cert-manager.yaml).
+#   * HTTPS :443 -- Let's Encrypt ACME endpoints (dynamic IPs -> egress to internet).
+#   * cluster DNS -- to resolve the ACME server hostname before the :443 call.
+#
+# Two additional rules below (kube-apiserver, kube-dns) are cluster-baseline, not
+# DNS-01-specific, but cert-manager BREAKS without them under default-deny. Keep
+# them unless a separate baseline policy already grants them.
+#
+# GATEWAY-SIDE FIREWALL CAVEAT (cross-ref the Ansible nftables artifact,
+# T-DEPLOY-07 / SPEC 14.7): the SOURCE IP the gateway's nftables sees depends on
+# the Cilium masquerade mode -- NODE IPs under default masquerade, POD CIDR under
+# native routing. Scope the gateway-side allow-rule to the correct source range.
+# This in-cluster policy is destination-scoped and does not affect that choice.
+#
+# Adjust the podSelector to your cert-manager install labels. Placeholders:
+#   <gateway-ip>       gateway LAN IP (single host -> /32)
+#   <dns-port>         RFC2136 listener port (replace with the integer)
+#   <kube-apiserver-ip> API server address reachable from pods (often the
+#                       `kubernetes` Service ClusterIP, e.g. 10.96.0.1)
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: cert-manager-dns01-egress
+  namespace: cert-manager
+  labels:
+    app.kubernetes.io/part-of: astropath-dns-relay
+spec:
+  # Target the cert-manager controller (the component that speaks rfc2136 + ACME).
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/instance: cert-manager
+      app.kubernetes.io/component: controller
+  policyTypes:
+    - Egress
+  egress:
+    # 0. kube-apiserver (cluster-baseline). Without this the controller cannot
+    #    watch/update resources. The API is usually the `kubernetes` Service
+    #    ClusterIP, which falls inside a private range excepted from rule 4.
+    - to:
+        - ipBlock:
+            cidr: <kube-apiserver-ip>/32
+      ports:
+        - protocol: TCP
+          port: 443
+    # 1. cluster DNS (cluster-baseline) -- resolve the ACME server hostname.
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    # 2. AstropathDNSRelay gateway -- the RFC2136 signed UPDATE (UDP + TCP).
+    - to:
+        - ipBlock:
+            cidr: <gateway-ip>/32
+      ports:
+        - protocol: UDP
+          port: <dns-port>
+        - protocol: TCP
+          port: <dns-port>
+    # 3. public recursive resolvers for the DNS-01 self-check (UDP + TCP).
+    - to:
+        - ipBlock:
+            cidr: 1.1.1.1/32
+        - ipBlock:
+            cidr: 8.8.8.8/32
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    # 4. ACME (Let's Encrypt) over HTTPS. Endpoint IPs are dynamic -> allow
+    #    egress to the public internet on 443, with RFC1918 ranges excepted so
+    #    this rule cannot silently widen access to internal services.
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+      ports:
+        - protocol: TCP
+          port: 443
