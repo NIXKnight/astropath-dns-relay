@@ -63,8 +63,9 @@ and Secure cookies + https scheme detection silently break behind TLS.
 Before first deploy, satisfy `host_prerequisites.md`: host NTP/chrony (TSIG skew
 > 300s fudge -> 100% BADTIME), the non-53 RFC2136 port decision, the firewall
 source restriction (Cilium masquerade caveat), the `astropath.<domain>` DNS
-A-record, and the host-Postgres listen/`pg_hba` reachability from the container
-subnet.
+A-record, the host-Postgres listen/`pg_hba` reachability from the container
+subnet, the bootstrap file's readability by the container uid (`10001`), and the
+`$$`-escaping of the argon2 admin hash wherever it passes through Docker Compose.
 
 ## References
 
