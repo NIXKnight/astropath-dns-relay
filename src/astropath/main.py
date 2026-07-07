@@ -118,6 +118,7 @@ async def run(
     )
 
     server: Rfc2136Server | None = None
+    dns_task: asyncio.Task[None] | None = None
     try:
         runtime = build_data_plane(config, http_client=client)
         dispatcher = Dispatcher(runtime.routing, metrics)
@@ -150,10 +151,13 @@ async def run(
         # via cancellation); otherwise shutdown was requested and we cancel it.
         plane_gave_up = dns_task.done()
 
-        for task in (dns_task, shutdown_wait):
-            if not task.done():
-                task.cancel()
-        await asyncio.gather(dns_task, shutdown_wait, return_exceptions=True)
+        # Graceful drain (SPEC §2/§3, T-M6-05): stop accepting, drain in-flight
+        # dispatches (bounded) before any resource is torn down.
+        server.stop_accepting()
+        await server.drain(settings.shutdown_drain_timeout)
+        if not shutdown_wait.done():
+            shutdown_wait.cancel()
+        await asyncio.gather(shutdown_wait, return_exceptions=True)
 
         if plane_gave_up:
             log.error("data plane exhausted its restart budget; exiting unhealthy")
@@ -161,10 +165,15 @@ async def run(
         log.info("graceful shutdown complete")
         return 0
     finally:
-        if server is not None:
-            server.close()
+        # HTTP client released, then the DNS sockets last (drained above); the
+        # interim metrics server is stopped last of all.
         if owns_client:
             await client.aclose()
+        if server is not None:
+            if dns_task is not None and not dns_task.done():
+                dns_task.cancel()
+                await asyncio.gather(dns_task, return_exceptions=True)
+            server.close()
         metrics_server.shutdown()
 
 
@@ -301,6 +310,7 @@ async def serve(
     await _safe_initial_refresh(cache)
 
     dns_server: Rfc2136Server | None = None
+    dns_task: asyncio.Task[None] | None = None
     try:
         runtime = build_data_plane(config, http_client=client)
         routing = _CompositeRouting(cache, runtime.routing)
@@ -366,11 +376,17 @@ async def serve(
         # up (both plane factories otherwise run until the shared shutdown).
         plane_gave_up = dns_task.done() or api_task.done()
 
-        api_server.should_exit = True  # nudge uvicorn toward a graceful stop
-        for task in (dns_task, api_task, shutdown_wait):
+        # Graceful drain order (SPEC §2/§3, T-M6-05): stop accepting new work on
+        # both planes, drain in-flight DNS dispatches (bounded), then wind down
+        # the API supervisor — uvicorn returns once it honors should_exit.
+        dns_server.stop_accepting()
+        api_server.should_exit = True
+        await dns_server.drain(settings.shutdown_drain_timeout)
+
+        for task in (api_task, shutdown_wait):
             if not task.done():
                 task.cancel()
-        await asyncio.gather(dns_task, api_task, shutdown_wait, return_exceptions=True)
+        await asyncio.gather(api_task, shutdown_wait, return_exceptions=True)
 
         if plane_gave_up:
             log.error("a plane exhausted its restart budget; exiting unhealthy")
@@ -378,11 +394,16 @@ async def serve(
         log.info("graceful shutdown complete")
         return 0
     finally:
-        if dns_server is not None:
-            dns_server.close()
+        # Resource disposal order (SPEC §2/§3): DB pool, then HTTP clients, then
+        # the DNS sockets last — in-flight replies were already drained above.
         await database.dispose()
         if owns_client:
             await client.aclose()
+        if dns_task is not None and not dns_task.done():
+            dns_task.cancel()
+            await asyncio.gather(dns_task, return_exceptions=True)
+        if dns_server is not None:
+            dns_server.close()
 
 
 def main() -> int:

@@ -101,6 +101,12 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
     log_format: str = "text"
 
+    shutdown_drain_timeout: float = 10.0
+    """Seconds to drain in-flight DNS dispatches on SIGTERM before force-closing
+    sockets (SPEC §2/§3, T-M6-05). Kept below a typical orchestrator grace period
+    (e.g. Kubernetes ``terminationGracePeriodSeconds`` 30s) so the process exits
+    cleanly within its window."""
+
 
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:
