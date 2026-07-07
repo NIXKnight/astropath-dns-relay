@@ -38,6 +38,9 @@ __all__ = [
     "BackendUpdate",
     "DomainCreate",
     "DomainRead",
+    "TsigKeyCreate",
+    "TsigKeyCreated",
+    "TsigKeyRead",
 ]
 
 
@@ -96,3 +99,32 @@ class DomainRead(BaseModel):
     record_name: str
     created_at: datetime
     has_secret: bool
+
+
+class TsigKeyCreate(BaseModel):
+    """Generate a TSIG key (SPEC §9.1); the secret is minted server-side."""
+
+    name: str = Field(min_length=1, max_length=255)
+    algorithm: str = Field(default="hmac-sha256")
+
+
+class TsigKeyRead(BaseModel):
+    """TSIG key view — the secret is never returned (SPEC §9.2)."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    name: str
+    algorithm: str
+    created_at: datetime
+
+
+class TsigKeyCreated(TsigKeyRead):
+    """One-time creation response carrying the base64 BIND secret (SPEC §9.2).
+
+    ``secret`` is shown **exactly once**; a lost secret is revoked and recreated,
+    never redisplayed (SPEC §16, LOW-1). This is the value that goes verbatim into
+    the cert-manager Secret so both sides key identically.
+    """
+
+    secret: str = Field(repr=False)
