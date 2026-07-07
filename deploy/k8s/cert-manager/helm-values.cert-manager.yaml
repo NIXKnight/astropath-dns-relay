@@ -1,0 +1,47 @@
+# AstropathDNSRelay -- cert-manager Helm values snippet.
+# Task: T-DEPLOY-02 (BLOCKER-3: split-horizon self-check fix). SPEC 14.3, 14.4.
+#
+# NOT a Kubernetes manifest -- this is a Helm values fragment for the
+# jetstack/cert-manager chart. Merge it into your cert-manager release values:
+#
+#   helm upgrade --install cert-manager jetstack/cert-manager \
+#     --namespace cert-manager --create-namespace \
+#     --set crds.enabled=true \
+#     --values helm-values.cert-manager.yaml
+#
+# Equivalent one-liner (escape the list comma in --set, per cert-manager docs):
+#   --set 'extraArgs={--dns01-recursive-nameservers-only,--dns01-recursive-nameservers=1.1.1.1:53\,8.8.8.8:53}'
+#
+# --------------------------------------------------------------------------- #
+# BLOCKER-3 -- split-horizon self-check
+# --------------------------------------------------------------------------- #
+# cert-manager runs a DNS-01 self-check before telling Let's Encrypt to validate.
+# By default it uses the pod's /etc/resolv.conf recursive resolvers. In a
+# split-horizon homelab (Pi-hole / PowerDNS serving an INTERNAL view of <domain>)
+# the self-check resolves the internal view, never sees Hurricane Electric's
+# PUBLIC _acme-challenge TXT, and the challenge hangs `pending` forever.
+#
+# Fix: force PUBLIC recursive resolvers for the self-check (SPEC 14.3). The
+# `extraArgs` form below is the cert-manager-documented, version-stable mechanism
+# (Context7-confirmed against the current chart).
+extraArgs:
+  # Use ONLY the resolvers listed below for the self-check; ignore resolv.conf.
+  - --dns01-recursive-nameservers-only
+  # Public resolvers that see HE's authoritative public answer. These MUST match
+  # the resolver egress allowed by networkpolicy-cert-manager-egress.yaml.
+  - --dns01-recursive-nameservers=1.1.1.1:53,8.8.8.8:53
+
+# --------------------------------------------------------------------------- #
+# VERIFY-AT-BUILD (T-TEST-20, SPEC 14.3): dedicated camelCase values keys
+# (e.g. `dns01RecursiveNameserversOnly`, `dns01RecursiveNameservers`) became
+# settable via Helm values in cert-manager v1.12+, but the EXACT values.yaml key
+# names are NOT documented and remain UNPROVEN for the pinned chart. Prefer the
+# `extraArgs` form above. Before switching to camelCase keys, confirm them:
+#   helm show values jetstack/cert-manager --version <pinned> | grep -i recursive
+# --------------------------------------------------------------------------- #
+
+# clusterResourceNamespace -- the namespace where a ClusterIssuer resolves
+# referenced Secrets (the TSIG Secret, ACME account keys). Defaults to the
+# release namespace ("cert-manager"). tsig-secret.example.yaml MUST land here
+# (SPEC 14.4). Uncomment ONLY if you relocate it:
+# clusterResourceNamespace: cert-manager
