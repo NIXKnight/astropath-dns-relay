@@ -31,11 +31,14 @@ probe endpoints, so M4 can append the static mount + catch-all without reorderin
 
 from __future__ import annotations
 
+import logging
+from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, Depends, FastAPI, Response
+from fastapi import APIRouter, Depends, FastAPI, HTTPException, Response
 from fastapi.openapi.docs import get_redoc_html, get_swagger_ui_html
-from fastapi.responses import HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.staticfiles import StaticFiles
 from prometheus_client import CONTENT_TYPE_LATEST, REGISTRY, CollectorRegistry
 from prometheus_client import generate_latest as prometheus_generate_latest
 
@@ -63,6 +66,16 @@ API_V1_PREFIX = "/api/v1"
 #: Served by our own admin-guarded route (the built-in unauthenticated one is off).
 OPENAPI_URL = "/openapi.json"
 
+log = logging.getLogger("astropath.api.app")
+
+#: First path segments the SPA catch-all must never answer with index.html — API
+#: and ops routes stay authoritative (an unknown ``/api/v1/*`` returns 404 JSON,
+#: not the SPA shell; SPEC §9.3). The docs/ops routes are also registered before
+#: the catch-all, so this is defense in depth for their sub-paths.
+_SPA_RESERVED_PREFIXES = frozenset(
+    {"api", "docs", "redoc", "openapi.json", "metrics", "healthz", "readyz", "assets"}
+)
+
 
 def _meta_router() -> APIRouter:
     """The ``/api/v1`` liveness route (proves the prefix is served, T-M3-01)."""
@@ -82,6 +95,7 @@ def create_app(
     cache: RoutingCache | None = None,
     kek: Kek | None = None,
     metrics_registry: CollectorRegistry | None = None,
+    static_dir: str | Path | None = None,
 ) -> FastAPI:
     """Build the management-plane FastAPI app from ``main()``-owned resources.
 
@@ -184,4 +198,60 @@ def create_app(
             response.status_code = 503
         return {"ready": ready, "dns": dns_ready, "api": api_ready}
 
+    # SPA serving (SPEC §9.3, T-M4-04) — registered LAST so the catch-all never
+    # shadows an API/ops route above. Disabled (the app still boots) when no built
+    # SPA is present; the dev workflow uses the Vite proxy instead.
+    _configure_spa(app, static_dir=static_dir, settings=settings)
+
     return app
+
+
+def _configure_spa(
+    app: FastAPI, *, static_dir: str | Path | None, settings: Settings
+) -> None:
+    """Mount the built admin SPA behind an explicit catch-all (SPEC §9.3).
+
+    The directory comes from the ``static_dir`` argument (tests pass a fixture
+    dist) or, when absent, ``settings.spa_dir`` (``/app/static`` in the image). If
+    neither is set the SPA is simply not served (dev/pure-API). If a directory is
+    configured but has no ``index.html`` the app still boots, logging one line and
+    serving the API/ops surface only (the AC for a missing runtime dist).
+    """
+    source = static_dir if static_dir is not None else settings.spa_dir
+    if source is None:
+        return  # SPA serving not configured (dev proxy / API-only tests).
+    root = Path(source)
+    index = root / "index.html"
+    if not index.is_file():
+        log.warning("SPA directory %r has no index.html; serving API only", str(root))
+        return
+    _register_spa(app, root=root, index=index)
+    log.info("serving admin SPA from %s", root)
+
+
+def _register_spa(app: FastAPI, *, root: Path, index: Path) -> None:
+    """Mount hashed assets and register the deep-link catch-all (SPEC §9.3).
+
+    ``StaticFiles(html=True)`` alone only serves a directory's ``index.html`` for
+    directory URLs — a deep link like ``/backends/5`` would 404. So the built
+    ``assets/`` are mounted for correct content types, and an explicit catch-all
+    returns a real file when one exists (favicon, robots) else ``index.html`` for
+    any non-reserved path. Reserved API/ops prefixes return 404 JSON so unknown
+    ``/api/v1/*`` paths are never masked by the SPA shell.
+    """
+    assets = root / "assets"
+    if assets.is_dir():
+        app.mount("/assets", StaticFiles(directory=assets), name="assets")
+
+    root_resolved = root.resolve()
+
+    @app.get("/{full_path:path}", include_in_schema=False)
+    async def spa(full_path: str) -> FileResponse:
+        first_segment = full_path.split("/", 1)[0]
+        if first_segment in _SPA_RESERVED_PREFIXES:
+            raise HTTPException(status_code=404, detail="Not Found")
+        if full_path:
+            candidate = (root / full_path).resolve()
+            if candidate.is_file() and candidate.is_relative_to(root_resolved):
+                return FileResponse(candidate)
+        return FileResponse(index)

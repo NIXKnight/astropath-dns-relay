@@ -86,6 +86,14 @@ class Settings(BaseSettings):
     the origin check is disabled (single-node dev); production sets it explicitly.
     """
 
+    spa_dir: str | None = None
+    """Directory of the built admin SPA (``index.html`` + ``assets/``), served by
+    the management app behind an explicit catch-all (SPEC §9.3, T-M4-04). In the
+    container this is ``/app/static`` (set via ``ASTROPATH_SPA_DIR``). When unset,
+    or when the directory has no ``index.html``, the SPA is not served and the app
+    still boots (API/ops only) — the dev workflow uses the Vite proxy instead.
+    """
+
     dns_bind: str = "0.0.0.0"
     dns_port: int = 53
     http_bind: str = "0.0.0.0"
