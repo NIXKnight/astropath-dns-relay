@@ -33,6 +33,9 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field
 
 __all__ = [
+    "ApiTokenCreate",
+    "ApiTokenCreated",
+    "ApiTokenRead",
     "BackendCreate",
     "BackendRead",
     "BackendUpdate",
@@ -42,6 +45,34 @@ __all__ = [
     "TsigKeyCreated",
     "TsigKeyRead",
 ]
+
+
+class ApiTokenCreate(BaseModel):
+    """Mint a management-API token; the value is generated server-side (§9.1)."""
+
+    name: str = Field(min_length=1, max_length=255)
+
+
+class ApiTokenRead(BaseModel):
+    """API-token view — the token value is never returned (SPEC §9.2, §6.2)."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    name: str
+    created_at: datetime
+    last_used_at: datetime | None
+
+
+class ApiTokenCreated(ApiTokenRead):
+    """One-time creation response carrying the plaintext token (SPEC §9.2, §16).
+
+    ``token`` is shown **exactly once**; a lost token is revoked and a fresh one
+    minted, never redisplayed (SPEC §16, LOW-1). Only its SHA-256 hash is stored.
+    """
+
+    token: str = Field(repr=False)
+    last_used_at: datetime | None = None
 
 
 class BackendCreate(BaseModel):
