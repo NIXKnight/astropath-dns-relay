@@ -24,5 +24,6 @@ Importing this package imports every built-in provider module so their
 """
 
 from astropath.providers.hurricane import HurricaneProvider
+from astropath.providers.route53 import Route53Provider
 
-__all__ = ["HurricaneProvider"]
+__all__ = ["HurricaneProvider", "Route53Provider"]
