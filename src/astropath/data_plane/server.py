@@ -35,6 +35,7 @@ import asyncio
 import contextlib
 import logging
 import struct
+from collections.abc import Callable
 from typing import Any
 
 import dns.name
@@ -49,17 +50,30 @@ log = logging.getLogger("astropath.data_plane.server")
 
 Keyring = dict[dns.name.Name, dns.tsig.Key]
 
+#: A zero-arg callable returning the current keyring. The management plane (M3)
+#: supplies ``lambda: cache.keyring`` so a TSIG key added via the API converges to
+#: the data plane on the next request without a restart (T-M3-16); the file-based
+#: M1 path passes a static dict, wrapped here as a constant provider.
+KeyringProvider = Callable[[], Keyring]
+
+
+def _as_provider(keyring: Keyring | KeyringProvider) -> KeyringProvider:
+    """Normalize a static keyring or a provider to a provider callable."""
+    if callable(keyring):
+        return keyring
+    return lambda: keyring
+
 
 class _UdpProtocol(asyncio.DatagramProtocol):
     """UDP datagram protocol: sync callback hands off to a task (SPEC §3.11)."""
 
     def __init__(
         self,
-        keyring: Keyring,
+        keyring: KeyringProvider,
         dispatcher: ChallengeDispatcher,
         metrics: DataPlaneMetrics,
     ) -> None:
-        self._keyring = keyring
+        self._keyring = keyring  # a provider; resolved per datagram
         self._dispatcher = dispatcher
         self._metrics = metrics
         self._transport: asyncio.DatagramTransport | None = None
@@ -80,7 +94,7 @@ class _UdpProtocol(asyncio.DatagramProtocol):
         try:
             reply = await handle_query(
                 data,
-                self._keyring,
+                self._keyring(),  # resolve the current keyring per datagram (T-M3-16)
                 self._dispatcher,
                 source=str(addr[0]),
                 metrics=self._metrics,
@@ -97,14 +111,14 @@ class Rfc2136Server:
 
     def __init__(
         self,
-        keyring: Keyring,
+        keyring: Keyring | KeyringProvider,
         dispatcher: ChallengeDispatcher,
         metrics: DataPlaneMetrics,
         *,
         host: str,
         port: int,
     ) -> None:
-        self._keyring = keyring
+        self._keyring = _as_provider(keyring)
         self._dispatcher = dispatcher
         self._metrics = metrics
         self._host = host
@@ -161,7 +175,7 @@ class Rfc2136Server:
                 try:
                     reply = await handle_query(
                         payload,
-                        self._keyring,
+                        self._keyring(),  # current keyring per message (T-M3-16)
                         self._dispatcher,
                         source=source,
                         metrics=self._metrics,
