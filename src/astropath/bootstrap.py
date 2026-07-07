@@ -55,10 +55,10 @@ import os
 import secrets
 import sys
 import tomllib
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TextIO
+from typing import Any, TextIO
 
 import dns.name
 import dns.tsig
@@ -76,6 +76,7 @@ from astropath.providers.base import Provider, get_provider
 from astropath.providers.hurricane import HurricaneProvider
 
 __all__ = [
+    "BackendConfig",
     "BootstrapConfig",
     "BootstrapError",
     "DataPlaneRuntime",
@@ -102,6 +103,25 @@ class ZoneConfig:
     provider: str
     record_name: str
     he_dynamic_key: str | None = None  # decrypted; redact in any diagnostic
+    #: Unique backend identity (DB ``Backend.name``); ``None`` for the M1 file
+    #: path, where providers are grouped by ``provider`` type instead.
+    backend: str | None = None
+
+
+@dataclass(frozen=True)
+class BackendConfig:
+    """One provider backend's decrypted shared config (secrets in memory only).
+
+    ``name`` is the backend's unique identity (the DB ``Backend.name``); it keys
+    provider construction so two backends of the **same** ``provider`` type (e.g.
+    two Route53 hosted zones) get separate instances. ``config`` is the decrypted
+    shared config handed to ``Provider.from_config`` — **empty** for Hurricane
+    Electric, whose per-record keys live on the Domain (HIGH-7).
+    """
+
+    name: str
+    provider: str
+    config: Mapping[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -110,6 +130,9 @@ class BootstrapConfig:
 
     tsig_keys: list[TsigKeySpec] = field(default_factory=list)
     zones: list[ZoneConfig] = field(default_factory=list)
+    #: Per-backend shared config (DB path); empty on the M1 file path, where
+    #: ``build_data_plane`` falls back to grouping providers by type.
+    backends: list[BackendConfig] = field(default_factory=list)
     listener_host: str = "0.0.0.0"
     listener_port: int = 53
 
@@ -178,20 +201,37 @@ def build_data_plane(
 ) -> DataPlaneRuntime:
     """Build the keyring + routing + providers from a loaded config (SPEC §16).
 
-    One provider instance is created per provider type (sharing the long-lived
-    HTTP client); HE per-record dynamic keys are injected per zone (domain-scoped
-    credential, HIGH-7). This is the shared runtime path M2 reuses from the DB.
+    One provider instance is created **per backend** (keyed by
+    :attr:`ZoneConfig.backend`, falling back to the provider type for the M1 file
+    path that has no named backends), constructed from that backend's decrypted
+    shared config via ``Provider.from_config`` (T-M5-05, closing the per-backend
+    credential wiring M2 deferred). Registry lookup stays by ``Backend.type``. HE
+    keeps an empty backend config — its per-record dynamic keys are injected per
+    zone (domain-scoped, HIGH-7). The shared ``httpx`` client is handed to every
+    provider; Route53 owns its own aiobotocore session and ignores it. This is
+    the shared runtime path M2 reuses from the DB.
     """
     keyring = build_keyring(config.tsig_keys)
+    backends_by_name = {backend.name: backend for backend in config.backends}
     providers: dict[str, Provider] = {}
     routes: list[Route] = []
 
     for zone_config in config.zones:
-        provider = providers.get(zone_config.provider)
+        key = zone_config.backend or zone_config.provider
+        provider = providers.get(key)
         if provider is None:
-            provider_cls = get_provider(zone_config.provider)
-            provider = provider_cls.from_config({}, http=http_client)
-            providers[zone_config.provider] = provider
+            backend: BackendConfig | None = None
+            if zone_config.backend is not None:
+                backend = backends_by_name.get(zone_config.backend)
+            provider_type = (
+                backend.provider if backend is not None else zone_config.provider
+            )
+            provider_config: Mapping[str, Any] = (
+                backend.config if backend is not None else {}
+            )
+            provider_cls = get_provider(provider_type)
+            provider = provider_cls.from_config(provider_config, http=http_client)
+            providers[key] = provider
 
         if isinstance(provider, HurricaneProvider) and zone_config.he_dynamic_key:
             provider.register_record_key(

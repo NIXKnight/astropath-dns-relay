@@ -52,6 +52,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlmodel import select
 
 from astropath.bootstrap import (
+    BackendConfig,
     BootstrapConfig,
     DataPlaneRuntime,
     ZoneConfig,
@@ -83,9 +84,11 @@ async def load_config_from_db(session: AsyncSession, kek: Kek) -> BootstrapConfi
     """Decrypt the persisted rows into a :class:`BootstrapConfig` (SPEC §16.3).
 
     Mirrors :func:`astropath.bootstrap.load_bootstrap` but reads the database:
-    every ``TsigKey`` becomes a :class:`TsigKeySpec` and every ``Domain`` (joined
-    to its ``Backend`` for the provider type) becomes a :class:`ZoneConfig` with
-    the HE per-record key decrypted in memory. Listener bind/port are process
+    every ``TsigKey`` becomes a :class:`TsigKeySpec`; every ``Backend`` becomes a
+    :class:`BackendConfig` with its ``config_encrypted`` JSON decrypted in memory
+    (T-M5-05 — the per-backend credential wiring M2 deferred; HE decrypts to an
+    empty config); every ``Domain`` becomes a :class:`ZoneConfig` bound to its
+    backend, with the HE per-record key decrypted. Listener bind/port are process
     config (Settings), not DB rows, so the defaults are left untouched.
     """
     codec = SecretCodec(kek)
@@ -101,24 +104,33 @@ async def load_config_from_db(session: AsyncSession, kek: Kek) -> BootstrapConfi
     ]
 
     backend_rows = (await session.execute(select(Backend))).scalars().all()
-    backend_type_by_id = {row.id: row.type for row in backend_rows}
+    backend_by_id = {row.id: row for row in backend_rows}
+    backends = [
+        BackendConfig(
+            name=row.name,
+            provider=row.type,
+            config=codec.decrypt_json(row.config_encrypted),
+        )
+        for row in backend_rows
+    ]
 
     domain_rows = (await session.execute(select(Domain))).scalars().all()
     zones = [
         ZoneConfig(
             zone=row.zone,
-            provider=backend_type_by_id[row.backend_id],
+            provider=backend_by_id[row.backend_id].type,
             record_name=row.record_name,
             he_dynamic_key=(
                 codec.decrypt_text(row.secret_encrypted)
                 if row.secret_encrypted is not None
                 else None
             ),
+            backend=backend_by_id[row.backend_id].name,
         )
         for row in domain_rows
     ]
 
-    return BootstrapConfig(tsig_keys=tsig_keys, zones=zones)
+    return BootstrapConfig(tsig_keys=tsig_keys, zones=zones, backends=backends)
 
 
 async def load_tsig_key_ids(session: AsyncSession) -> dict[dns.name.Name, int]:

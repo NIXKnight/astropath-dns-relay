@@ -62,6 +62,7 @@ from astropath.models import (
 )
 from astropath.observability import DataPlaneMetrics
 from astropath.providers.hurricane import HurricaneProvider
+from astropath.providers.route53 import Route53Provider
 from astropath.rotation import rotate_stored_secrets
 from astropath.store import (
     SecretCodec,
@@ -264,6 +265,49 @@ async def test_load_config_from_db_decrypts_he_key(db: Database) -> None:
         config = await load_config_from_db(session, kek)
     assert [z.he_dynamic_key for z in config.zones] == [_HE_KEY]
     assert config.tsig_keys[0].secret_b64 == _TSIG_SECRET_B64
+
+
+async def test_route53_backend_decrypts_and_constructs_provider(
+    db: Database, http_client: httpx.AsyncClient
+) -> None:
+    # T-M5-05 end-to-end through real Postgres: a Route53 Backend's encrypted
+    # config decrypts and constructs a Route53Provider, routed by Backend.type.
+    # The Domain carries no HE key — Route53 creds live on the Backend (HIGH-7).
+    kek = Kek([generate_key()])
+    codec = _codec(kek)
+    r53_config = {
+        "access_key_id": "AKIAFAKEINTEGRATION0",
+        "secret_access_key": "FAKESECRETfakesecretfakesecretintegr1234",
+        "hosted_zone_id": "Z-INT-PROD",
+        "region": "eu-central-1",
+    }
+    async with db.session() as session:
+        backend = build_backend(
+            codec, name="aws-prod", backend_type="route53", config=r53_config
+        )
+        session.add(backend)
+        await session.flush()
+        assert backend.id is not None
+        session.add(
+            build_domain(
+                codec,
+                zone="example.com.",
+                backend_id=backend.id,
+                record_name="_acme-challenge.example.com.",
+                he_dynamic_key=None,
+            )
+        )
+        await session.commit()
+
+    cache = RoutingCache(make_db_loader(db.sessionmaker, kek, http_client))
+    await cache.refresh()
+
+    route = cache.match(dns.name.from_text("example.com."))
+    assert route is not None
+    provider = route.provider
+    assert isinstance(provider, Route53Provider)
+    assert provider.hosted_zone_id == "Z-INT-PROD"
+    assert provider.region == "eu-central-1"
 
 
 # --------------------------------------------------------------------------- #
