@@ -1,0 +1,69 @@
+# AstropathDNSRelay -- wildcard Certificate consumed by Traefik.
+# Task: T-DEPLOY-06. SPEC 14.4, 14.8.
+#
+# NAMESPACE: the WORKLOAD / Traefik namespace (NOT cert-manager). cert-manager
+# writes the issued cert+key into the TLS Secret `spec.secretName` in THIS
+# namespace, where Traefik can mount it as its default certificate (SPEC 14.4).
+#
+# COVERAGE LIMIT (SPEC 14.8): `*.<domain>` covers exactly ONE label. It does NOT
+# cover the apex `<domain>`, and does NOT cover multi-label names like
+# `a.b.<domain>`. v1 is wildcard-only -- a single `_acme-challenge.<domain>`
+# challenge name -- consistent with Hurricane Electric's single-value dynamic
+# record (SPEC 3.13, 5.7). Apex+wildcard on ONE certificate needs TWO concurrent
+# TXT values, which requires a multi-value provider (Route53) or HE account-login
+# mode -- out of scope for the M1 HE path.
+#
+# STAGING-FIRST: issuerRef points at `letsencrypt-staging`. After the staging
+# cert reaches Ready, flip `issuerRef.name` to `letsencrypt-prod` and delete the
+# staging TLS Secret so a prod cert is requested (RUNBOOK.md "Staging -> prod").
+#
+# Placeholders: <traefik-namespace>, <domain>.
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: wildcard-tls
+  namespace: <traefik-namespace>
+  labels:
+    app.kubernetes.io/part-of: astropath-dns-relay
+spec:
+  # cert-manager creates this TLS Secret (kubernetes.io/tls) in this namespace.
+  secretName: wildcard-tls
+  # STAGING first; flip to letsencrypt-prod once green (RUNBOOK.md).
+  issuerRef:
+    name: letsencrypt-staging
+    kind: ClusterIssuer
+    group: cert-manager.io
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+    rotationPolicy: Always
+  dnsNames:
+    - "*.<domain>"
+    # Do NOT add the apex "<domain>" on the HE M1 path: apex+wildcard needs two
+    # concurrent TXT values (SPEC 14.8). Wildcard-only for v1.
+#
+# --------------------------------------------------------------------------- #
+# Traefik default-certificate wiring (tlsStore note, SPEC "Traefik default-cert
+# pickup"):
+#
+# Point Traefik's default TLS store at the Secret above so every unmatched SNI
+# gets the wildcard. Traefik's default TLSStore is named `default` in the Traefik
+# namespace (traefik.io/v1alpha1 -- shown here as a COMMENT so this file needs no
+# Traefik CRD schema to validate):
+#
+#   apiVersion: traefik.io/v1alpha1
+#   kind: TLSStore
+#   metadata:
+#     name: default
+#     namespace: <traefik-namespace>
+#   spec:
+#     defaultCertificate:
+#       secretName: wildcard-tls
+#
+# RESTART NOTE (RUNBOOK.md): if the `wildcard-tls` Secret does not yet exist when
+# Traefik starts, Traefik serves its built-in self-signed default. After the cert
+# issues, Traefik usually hot-reloads the TLSStore; if it does not pick the new
+# cert up, restart / roll the Traefik pods so the default store re-reads the
+# Secret.
+# --------------------------------------------------------------------------- #
