@@ -27,6 +27,7 @@ validation (T-M1-26). All keys are generated fresh and discarded.
 from __future__ import annotations
 
 import pytest
+from cryptography.fernet import Fernet
 
 from astropath.crypto import InvalidToken, Kek, KekError, generate_key, parse_keylist
 
@@ -72,6 +73,47 @@ def test_no_ttl_decrypt_does_not_expire() -> None:
     key = generate_key()
     token = Kek([key]).encrypt(b"stored-long-ago")
     assert Kek([key]).decrypt(token) == b"stored-long-ago"
+
+
+# --------------------------------------------------------------------------- #
+# T-TEST-08 gap-fill: the round-trip / cross-keylist / old-key-after-prepend
+# clauses are proven above. The two cases below make the timestamp and aged-
+# token clauses meaningful — the existing rotate/no-ttl tests use fresh tokens,
+# which cannot distinguish "preserved" from "restamped now". A token is stamped
+# far in the past with Fernet.encrypt_at_time so the assertions are decisive.
+# --------------------------------------------------------------------------- #
+
+_LONG_AGO = 1_000_000_000  # 2001-09-09 UTC — decisively older than any test run
+
+
+def test_rotate_preserves_creation_timestamp() -> None:
+    """AC 'rotate() preserves timestamp': a token stamped long ago keeps that
+    exact creation time after rotation under a new primary (not restamped now)."""
+    old_key = generate_key()
+    new_key = generate_key()
+    token = Fernet(old_key).encrypt_at_time(b"aged-secret", _LONG_AGO)
+
+    migrated = Kek([new_key, old_key]).rotate(token)
+
+    # extract_timestamp reads the (unverified) creation time; it stays _LONG_AGO.
+    assert Fernet(new_key).extract_timestamp(migrated) == _LONG_AGO
+    assert migrated != token  # genuinely re-encrypted under the new primary
+    assert Kek([new_key]).decrypt(migrated) == b"aged-secret"
+
+
+def test_aged_token_decrypts_without_ttl_but_would_fail_under_ttl() -> None:
+    """AC 'no-ttl decrypt of aged token': Kek.decrypt passes no ttl, so a token
+    stamped long ago still decrypts; the identical token WOULD raise InvalidToken
+    once a ttl is enforced (SPEC §7.1 — why the at-rest path omits ttl)."""
+    key = generate_key()
+    token = Fernet(key).encrypt_at_time(b"stored-long-ago", _LONG_AGO)
+
+    # No ttl (the Kek at-rest path) -> the aged token is accepted.
+    assert Kek([key]).decrypt(token) == b"stored-long-ago"
+
+    # Contrast: the same aged token is rejected the moment a ttl is applied.
+    with pytest.raises(InvalidToken):
+        Fernet(key).decrypt(token, ttl=60)
 
 
 def test_decrypt_rejects_foreign_token() -> None:
