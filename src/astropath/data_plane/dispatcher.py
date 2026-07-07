@@ -357,6 +357,20 @@ class Dispatcher:
         if result == "ok":
             self._metrics.mark_zone_success(zone_text, self._clock())
 
+        # Correlated challenge-outcome line (SPEC §11.4): the correlation id set by
+        # handle_query stamps this record, tying it to the challenge's other logs
+        # and its ChallengeEvent audit row. Proves provider success/failure — the
+        # HE good/nochg vs badauth outcome maps to result=ok/error (SPEC §16, LOW-4).
+        log.info(
+            "challenge %s %s zone=%s provider=%s latency_ms=%d source=%s",
+            action.value,
+            result,
+            zone_text,
+            provider.type,
+            int(latency * 1000),
+            source,
+        )
+
         await self._write_audit(
             AuditRecord(
                 zone=zone_text,

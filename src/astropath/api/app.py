@@ -51,6 +51,7 @@ from astropath.api import (
     routes_tsig,
 )
 from astropath.api.auth import AuthService, require_admin
+from astropath.api.correlation_mw import CorrelationIdMiddleware
 from astropath.api.csrf import CsrfOriginMiddleware
 from astropath.api.deps import AppResources
 from astropath.api.ratelimit import LoginRateLimiter
@@ -131,6 +132,10 @@ def create_app(
     # session middleware so it runs first — outermost — and rejects a forged
     # cross-origin write before any handler work).
     app.add_middleware(CsrfOriginMiddleware, allowed_origin=settings.management_origin)
+    # Correlation id (T-M6-03): added LAST so it is the outermost middleware — it
+    # binds the id before session/CSRF run (so even a rejected request is
+    # traceable) and echoes X-Correlation-ID on every response (SPEC §11.4).
+    app.add_middleware(CorrelationIdMiddleware)
 
     app.include_router(_meta_router())
     app.include_router(routes_auth.router)

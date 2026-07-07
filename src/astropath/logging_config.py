@@ -217,6 +217,8 @@ class JsonFormatter(logging.Formatter):
             "ts": self.formatTime(record),
             "level": record.levelname,
             "logger": record.name,
+            # Set by CorrelationIdFilter (SPEC §11.4); defaulted for stray records.
+            "correlation_id": getattr(record, "correlation_id", None),
             "message": record.getMessage(),
         }
         if record.exc_info:
@@ -224,7 +226,7 @@ class JsonFormatter(logging.Formatter):
         return json.dumps(payload, default=str)
 
 
-_TEXT_FORMAT = "%(asctime)s %(levelname)-8s %(name)s: %(message)s"
+_TEXT_FORMAT = "%(asctime)s %(levelname)-8s [%(correlation_id)s] %(name)s: %(message)s"
 
 
 def configure_logging(settings: Settings | None = None) -> None:
@@ -242,6 +244,10 @@ def configure_logging(settings: Settings | None = None) -> None:
         "version": 1,
         "disable_existing_loggers": False,
         "filters": {
+            # Correlation runs first (stamps the id), redaction second (scrubs
+            # secrets) — both before the formatter, so every emitted line carries
+            # the correlation id and no secret (SPEC §11.4).
+            "correlation": {"()": "astropath.correlation.CorrelationIdFilter"},
             "redaction": {"()": f"{__name__}.RedactionFilter"},
         },
         "formatters": {
@@ -253,7 +259,7 @@ def configure_logging(settings: Settings | None = None) -> None:
                 "class": "logging.StreamHandler",
                 "stream": "ext://sys.stdout",
                 "formatter": formatter_name,
-                "filters": ["redaction"],
+                "filters": ["correlation", "redaction"],
                 "level": level,
             },
         },

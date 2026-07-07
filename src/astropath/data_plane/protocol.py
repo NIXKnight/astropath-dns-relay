@@ -48,6 +48,7 @@ import dns.tsig
 import dns.update
 import dns.wire
 
+from astropath.correlation import correlation_scope, new_dns_correlation_id
 from astropath.observability import (
     TSIG_ABSENT,
     TSIG_BADKEY,
@@ -190,10 +191,32 @@ async def handle_query(
     source: str,
     metrics: DataPlaneMetrics,
 ) -> bytes | None:
-    """Process one inbound DNS message; return the reply wire (or ``None``).
+    """Process one inbound DNS message under a fresh correlation scope (T-M6-03).
 
-    A ``None`` return means "drop" (no answerable reply). The auth gate rejects
-    an unsigned UPDATE with NOTAUTH and never dispatches it.
+    A ``None`` return means "drop" (no answerable reply). Every log record emitted
+    during parse → auth gate → dispatch → provider → audit shares one correlation
+    id derived from the 16-bit DNS request id (SPEC §11.4), so a stuck challenge is
+    traceable end to end.
+    """
+    request_id = int.from_bytes(wire[:2], "big") if len(wire) >= 2 else 0
+    with correlation_scope(new_dns_correlation_id(request_id)):
+        return await _process_query(
+            wire, keyring, dispatcher, source=source, metrics=metrics
+        )
+
+
+async def _process_query(
+    wire: bytes,
+    keyring: dict[dns.name.Name, dns.tsig.Key],
+    dispatcher: ChallengeDispatcher,
+    *,
+    source: str,
+    metrics: DataPlaneMetrics,
+) -> bytes | None:
+    """Parse, auth-gate, route, and reply (the wire→wire heart of the pipeline).
+
+    The auth gate rejects an unsigned UPDATE with NOTAUTH and never dispatches it.
+    Runs inside the correlation scope opened by :func:`handle_query`.
     """
     # Inbound TSIG failure family (SPEC §3.3). Catch exactly these server-side
     # classes; BadAlgorithm (bound-algorithm mismatch) is folded into BADKEY.
