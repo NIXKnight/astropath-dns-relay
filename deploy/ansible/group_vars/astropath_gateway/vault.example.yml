@@ -1,0 +1,29 @@
+---
+# group_vars/astropath_gateway/vault.example.yml
+#
+# EXAMPLE of the VARIABLE NAMES the private ops repo must define -- and then
+# ENCRYPT with `ansible-vault encrypt`. This example file is plaintext and ships
+# ONLY placeholder tokens (<VAULT>): no real secret value ever appears in this
+# public repo (SPEC §10.2 secret discipline).
+#
+# In the private repo this file is ansible-vault-encrypted at rest. Real values
+# are generated per SPEC (§7 KEK keylist, §6.3 admin argon2id hash, §8.2 session
+# secret) and delivered out-of-band. Redact to <REDACTED> in any diagnostic.
+
+# Full async DSN, postgresql+asyncpg:// form (SPEC §10.2). The embedded password
+# MUST equal vault_astropath_db_password below.
+vault_astropath_database_dsn: "<VAULT>"
+
+# Raw Postgres password for the `pgsql_dbs_users` role entry (must match the DSN).
+vault_astropath_db_password: "<VAULT>"
+
+# Ordered Fernet keylist, primary first -- KEK for provider configs + TSIG + HE
+# keys (SPEC §7).
+vault_astropath_credential_kek: "<VAULT>"
+
+# argon2id hash seeding the bootstrap admin credential (SPEC §6.3) -- HASH, not
+# the plaintext password.
+vault_astropath_admin_password_hash: "<VAULT>"
+
+# Starlette SessionMiddleware signing secret (SPEC §8.2).
+vault_astropath_session_secret: "<VAULT>"

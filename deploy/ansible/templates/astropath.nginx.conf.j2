@@ -1,0 +1,70 @@
+# astropath.<domain> -- LAN-only TLS vhost for the AstropathDNSRelay admin plane.
+#
+# EXAMPLE / TEMPLATE rendered by the PRIVATE ops repo's nginx role. It terminates
+# LAN wildcard TLS and reverse-proxies to the loopback-published HTTP plane of the
+# fw-astropath stack. Implements the SPEC §2 / §8.6 proxy-header contract:
+# X-Forwarded-Proto/-For/Host are set here; uvicorn trusts them ONLY from
+# ASTROPATH_FORWARDED_ALLOW_IPS (paired in fw-astropath.compose.yml.j2).
+#
+# The private repo supplies: the server_name domain, the LAN wildcard cert/key,
+# the LAN CIDR allowlist, and its standard ssl_* hardening snippet. `nginx -t` is
+# the private repo's validation step (nginx not present in this public repo).
+
+upstream astropath_http {
+    # Loopback-published HTTP plane of the fw-astropath container.
+    server 127.0.0.1:8080;
+    keepalive 16;
+}
+
+# Plaintext -> TLS redirect.
+server {
+    listen 80;
+    listen [::]:80;
+    server_name astropath.{{ astropath_domain }};
+    return 301 https://$host$request_uri;
+}
+
+server {
+    # For nginx >= 1.25.1 add `http2 on;` below; older nginx uses
+    # `listen 443 ssl http2;`. Kept off the listen line for version portability.
+    listen 443 ssl;
+    listen [::]:443 ssl;
+    server_name astropath.{{ astropath_domain }};
+
+    # LAN wildcard TLS -- placeholder paths; the private repo supplies the
+    # certificate/key material (and typically its own ssl_* snippet).
+    ssl_certificate     {{ astropath_tls_cert_path }};
+    ssl_certificate_key {{ astropath_tls_key_path }};
+    ssl_protocols       TLSv1.2 TLSv1.3;
+    ssl_ciphers         HIGH:!aNULL:!MD5;
+    ssl_prefer_server_ciphers off;
+
+    # LAN-only exposure. /metrics and /docs must never reach the WAN
+    # (SPEC §8.7); this allowlist is the firewall's peer to the nftables rule.
+    allow {{ astropath_lan_cidr }};
+    deny  all;
+
+    # The admin plane can carry one-time secrets on create; never cache.
+    add_header Cache-Control "no-store" always;
+
+    client_max_body_size 2m;
+
+    location / {
+        proxy_pass http://astropath_http;
+        proxy_http_version 1.1;
+
+        # SPEC §2 / §8.6 proxy-header contract. Pair with
+        # ASTROPATH_FORWARDED_ALLOW_IPS = the source IP uvicorn sees for this
+        # nginx (the fw-astropath docker network gateway). Without the pairing,
+        # uvicorn drops X-Forwarded-* and Secure-cookie/scheme detection breaks.
+        proxy_set_header Host              $host;
+        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Real-IP         $remote_addr;
+        proxy_set_header Connection        "";
+
+        proxy_connect_timeout 5s;
+        proxy_read_timeout    30s;
+        proxy_send_timeout    30s;
+    }
+}

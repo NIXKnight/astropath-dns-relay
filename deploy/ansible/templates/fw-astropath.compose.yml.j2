@@ -1,0 +1,104 @@
+# fw-astropath -- gateway-host docker-compose stack (SPEC §1.4, §15.4).
+#
+# EXAMPLE / TEMPLATE. The PRIVATE ops repo renders this via its
+# `docker-compose-service` role (mirrors its OpenBao / PowerDNS stacks) and
+# supplies every value from inventory + ansible-vault. No real hostname, IP,
+# port, or secret ever appears in this public repo.
+#
+# Differences from the repo-root docker-compose.example.yml (dev-only):
+#   * Postgres is NOT a service here -- it is a HOST-managed database provisioned
+#     by the `pgsql_dbs_users` role (SPEC §15.4). ASTROPATH_DATABASE_DSN targets
+#     that host Postgres (see host_prerequisites.md for the listen/pg_hba prereq).
+#   * All ASTROPATH_* secrets are ansible-vault vars (vault_astropath_* names).
+#   * The HTTP plane is published on loopback only; the host nginx vhost
+#     (astropath.<domain>) terminates LAN TLS and proxies to it (SPEC §8.6).
+#
+# Vars consumed: group_vars/astropath_gateway/{vars,vault}.example.yml.
+# Validate a rendered copy with: docker compose -f <rendered> config
+
+name: fw-astropath
+
+services:
+  astropath:
+    # Published image (SPEC §1.4 / §15.2). Pin a concrete tag in the private
+    # repo; never deploy :latest to production.
+    image: "nixknight/astropath-dns-relay:{{ astropath_image_tag }}"
+    restart: unless-stopped
+    init: true                 # tini as PID1: forwards SIGTERM to main() (SPEC §2.2) and reaps
+    stop_grace_period: 30s     # let the per-plane supervisors drain (SPEC §2.1 / T-M6-05)
+
+    environment:
+      # --- bootstrap secrets -- ansible-vault-sourced, NEVER literals (SPEC §10.2) ---
+      # DSN embeds the pgsql_dbs_users password; its host must resolve the
+      # host-managed Postgres from inside the container (host.docker.internal
+      # via the extra_hosts mapping below, or the docker bridge gateway).
+      ASTROPATH_DATABASE_DSN: "{{ vault_astropath_database_dsn }}"
+      # Ordered Fernet keylist, primary first (SPEC §7).
+      ASTROPATH_CREDENTIAL_KEK: "{{ vault_astropath_credential_kek }}"
+      # argon2id hash seeding the bootstrap admin credential (SPEC §6.3).
+      ASTROPATH_ADMIN_PASSWORD_HASH: "{{ vault_astropath_admin_password_hash }}"
+      # Starlette SessionMiddleware signing secret (SPEC §8.2).
+      ASTROPATH_SESSION_SECRET: "{{ vault_astropath_session_secret }}"
+
+      # --- proxy-header trust (SPEC §8.6 / §2) ---
+      # uvicorn trusts X-Forwarded-Proto/-For ONLY from these source(s). Set to
+      # the IP uvicorn observes for the host nginx -- with the fixed docker
+      # network below that is the network gateway (.1). Without this, Secure
+      # cookies and https scheme detection break.
+      ASTROPATH_FORWARDED_ALLOW_IPS: "{{ astropath_forwarded_allow_ips }}"
+
+      # --- RFC2136 listener (UDP+TCP), non-53 port (SPEC §14.7; host_prerequisites.md) ---
+      ASTROPATH_DNS_BIND: "0.0.0.0"
+      ASTROPATH_DNS_PORT: "{{ astropath_dns_port }}"
+
+      # --- HTTP admin/API plane (behind nginx) ---
+      ASTROPATH_HTTP_BIND: "0.0.0.0"
+      ASTROPATH_HTTP_PORT: "8080"
+
+      # --- M1 no-DB bootstrap file (SPEC §16). KEK-encrypted at rest, vault-delivered. ---
+      ASTROPATH_BOOTSTRAP_PATH: "/etc/astropath/astropath.bootstrap.toml"
+
+      # --- interim M1 metrics exposition (SPEC §11.1). LAN exposure via nginx only (§8.7). ---
+      ASTROPATH_METRICS_PORT: "{{ astropath_metrics_port }}"
+
+      # --- logging (SPEC §11.4) ---
+      ASTROPATH_LOG_LEVEL: "{{ astropath_log_level }}"
+      ASTROPATH_LOG_FORMAT: "{{ astropath_log_format }}"
+
+    volumes:
+      # KEK-encrypted M1 bootstrap file (vault-delivered by the private repo),
+      # mounted read-only. Retired after the M1->M2 DB migration (SPEC §16.3).
+      - "{{ astropath_bootstrap_host_path }}:/etc/astropath/astropath.bootstrap.toml:ro"
+
+    ports:
+      # RFC2136 UPDATE listener -- BOTH udp AND tcp are mandatory (TSIG-signed
+      # UPDATEs exceed 512B -> TCP fallback; SPEC §14.7). Published on all host
+      # interfaces so cluster nodes can reach it; nftables source-restricts it
+      # (astropath.nftables.nft.j2 / host_prerequisites.md).
+      - "{{ astropath_dns_port }}:{{ astropath_dns_port }}/udp"
+      - "{{ astropath_dns_port }}:{{ astropath_dns_port }}/tcp"
+      # HTTP plane -- loopback only; reached solely by the host nginx vhost.
+      - "127.0.0.1:8080:8080/tcp"
+      # Interim metrics -- loopback only; never LAN-exposed except via the nginx
+      # allowlist vhost (SPEC §8.7). Cross-ref deploy/k8s/ for cluster scraping.
+      - "127.0.0.1:{{ astropath_metrics_port }}:{{ astropath_metrics_port }}/tcp"
+
+    extra_hosts:
+      # Makes the host-managed Postgres addressable as host.docker.internal from
+      # inside the container (used by ASTROPATH_DATABASE_DSN).
+      - "host.docker.internal:host-gateway"
+
+    # Binding a privileged (<1024) DNS port needs this capability; the image runs
+    # non-root (SPEC §15.2). Harmless when astropath_dns_port >= 1024 -- the
+    # private repo MAY drop it once the non-53 port is finalized.
+    cap_add:
+      - NET_BIND_SERVICE
+
+networks:
+  # Fixed subnet so the source IP uvicorn sees for nginx (the network gateway)
+  # is deterministic -- that address is what ASTROPATH_FORWARDED_ALLOW_IPS pins.
+  default:
+    name: fw-astropath
+    ipam:
+      config:
+        - subnet: "{{ astropath_docker_subnet }}"

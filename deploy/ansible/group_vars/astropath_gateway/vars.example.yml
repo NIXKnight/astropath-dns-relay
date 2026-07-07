@@ -1,0 +1,58 @@
+---
+# group_vars/astropath_gateway/vars.example.yml
+#
+# EXAMPLE non-secret inputs for the gateway-host AstropathDNSRelay deploy. Copy
+# into the PRIVATE ops repo's group_vars (or host_vars) and set real values.
+# Secret values live ONLY in the ansible-vault'd vault.yml (see vault.example.yml);
+# this file holds NO secrets. Placeholder values use <angle-brackets>.
+
+# --- image (SPEC §1.4 / §15.2) ---
+# Pin a concrete published tag in production; never :latest.
+astropath_image_tag: "<tag>"                        # e.g. "1.0.0"
+
+# --- vhost / TLS (SPEC §8.6; astropath.nginx.conf.j2) ---
+astropath_domain: "<domain>"                        # vhost = astropath.<domain>
+astropath_tls_cert_path: "/etc/ssl/astropath/fullchain.pem"   # LAN wildcard cert (private repo supplies)
+astropath_tls_key_path:  "/etc/ssl/astropath/privkey.pem"
+astropath_lan_cidr: "<lan-cidr>"                    # e.g. "10.0.0.0/24" -- nginx allow/deny
+
+# --- RFC2136 listener (SPEC §14.7; host_prerequisites.md) ---
+# PLACEHOLDER -- Operator decision pending. MUST avoid 53 (Pi-hole) and 5300
+# (PowerDNS-auth) on this gateway. Overrides the image default via ASTROPATH_DNS_PORT.
+astropath_dns_port: 5301
+
+# --- docker networking / proxy-header pairing (SPEC §8.6) ---
+# Fixed subnet for the fw-astropath docker network -> deterministic gateway IP.
+astropath_docker_subnet: "172.31.0.0/24"
+# Source IP uvicorn trusts for nginx's X-Forwarded-* -- the network gateway (.1
+# of the subnet above). Narrow to the exact IP; avoid "*". If the private repo
+# drops the fixed subnet, set this to the source IP uvicorn actually observes.
+astropath_forwarded_allow_ips: "172.31.0.1"
+
+# --- host paths ---
+# KEK-encrypted M1 bootstrap file on the host (vault-delivered), mounted RO.
+astropath_bootstrap_host_path: "/etc/astropath/astropath.bootstrap.toml"
+
+# --- metrics + logging (SPEC §11) ---
+astropath_metrics_port: 9090
+astropath_log_level: "INFO"
+astropath_log_format: "text"          # "json" if the image build enables it (SPEC §11.4)
+
+# --- firewall source restriction (SPEC §14.7; consumed by astropath.nftables.nft.j2) ---
+# Cilium masquerade caveat: NODE IPs under default masquerade, POD CIDR under
+# native routing. Cross-ref the deploy/k8s/ egress runbook. Placeholders only.
+astropath_acme_client_cidrs:
+  - "<cluster-node-ip-or-pod-cidr>"   # e.g. "10.0.1.11/32" (node) or "10.244.0.0/16" (pod CIDR)
+
+# --- Postgres provisioning -- consumed by the `pgsql_dbs_users` role (SPEC §15.4) ---
+# db + user both "astropath"; password is a VAULT reference (never a literal).
+# Keep this password IDENTICAL to the one embedded in vault_astropath_database_dsn.
+# Field names follow the private repo's role contract -- adjust keys to match it;
+# the load-bearing content is db=astropath, user=astropath, vault password ref.
+postgresql_db_users:
+  - name: astropath
+    db: astropath
+    password: "{{ vault_astropath_db_password }}"
+    encrypted: true
+    priv: "ALL"                       # least privilege: owner of its own database only
+    state: present
