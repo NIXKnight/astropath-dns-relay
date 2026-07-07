@@ -34,6 +34,8 @@ from __future__ import annotations
 from fastapi import APIRouter, FastAPI, Response
 from prometheus_client import CollectorRegistry
 
+from astropath.api import routes_auth
+from astropath.api.auth import AuthService
 from astropath.api.deps import AppResources
 from astropath.api.session import add_session_middleware
 from astropath.cache import RoutingCache
@@ -83,12 +85,14 @@ def create_app(
         cache=cache,
         kek=kek,
         metrics_registry=metrics_registry,
+        auth=AuthService(database, settings),
     )
 
     # Signed (not encrypted) session cookie carrying only an opaque admin marker.
     add_session_middleware(app, settings)
 
     app.include_router(_meta_router())
+    app.include_router(routes_auth.router)
 
     @app.get("/healthz", tags=["probes"], summary="Liveness (process up)")
     async def healthz() -> dict[str, str]:
