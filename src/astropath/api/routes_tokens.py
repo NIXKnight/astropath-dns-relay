@@ -36,7 +36,12 @@ from sqlmodel import select
 
 from astropath.api.auth import require_admin
 from astropath.api.deps import get_session
-from astropath.api.schemas import ApiTokenCreate, ApiTokenCreated, ApiTokenRead
+from astropath.api.schemas import (
+    ONE_TIME_SECRET_NOTICE,
+    ApiTokenCreate,
+    ApiTokenCreated,
+    ApiTokenRead,
+)
 from astropath.models import ApiToken
 from astropath.store import build_api_token
 
@@ -49,7 +54,12 @@ router = APIRouter(
 )
 
 
-@router.post("", response_model=ApiTokenCreated, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "",
+    response_model=ApiTokenCreated,
+    status_code=status.HTTP_201_CREATED,
+    response_description=ONE_TIME_SECRET_NOTICE,
+)
 async def create_api_token(
     payload: ApiTokenCreate,
     session: AsyncSession = Depends(get_session),

@@ -32,7 +32,18 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
+#: Authoritative "copy state" for the one-time-secret recovery policy (SPEC §16,
+#: LOW-1). Attached as the ``response_description`` of every create endpoint that
+#: mints a secret, so the value surfaces in the OpenAPI schema the management UI
+#: (M4) renders verbatim. Recovery is **revoke + recreate**, never redisplay.
+ONE_TIME_SECRET_NOTICE = (
+    "The generated secret is shown exactly once, in this response only. It is not "
+    "stored in recoverable form and cannot be retrieved again. If it is lost, revoke "
+    "this credential and create a new one — the value is never redisplayed."
+)
+
 __all__ = [
+    "ONE_TIME_SECRET_NOTICE",
     "ApiTokenCreate",
     "ApiTokenCreated",
     "ApiTokenRead",

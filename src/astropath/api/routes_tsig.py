@@ -36,7 +36,12 @@ from sqlmodel import select
 
 from astropath.api.auth import require_admin
 from astropath.api.deps import get_kek, get_session
-from astropath.api.schemas import TsigKeyCreate, TsigKeyCreated, TsigKeyRead
+from astropath.api.schemas import (
+    ONE_TIME_SECRET_NOTICE,
+    TsigKeyCreate,
+    TsigKeyCreated,
+    TsigKeyRead,
+)
 from astropath.bootstrap import generate_tsig_secret
 from astropath.crypto import Kek
 from astropath.data_plane.tsig import UnknownAlgorithm, algorithm_from_text
@@ -52,7 +57,12 @@ router = APIRouter(
 )
 
 
-@router.post("", response_model=TsigKeyCreated, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "",
+    response_model=TsigKeyCreated,
+    status_code=status.HTTP_201_CREATED,
+    response_description=ONE_TIME_SECRET_NOTICE,
+)
 async def create_tsig_key(
     payload: TsigKeyCreate,
     session: AsyncSession = Depends(get_session),
