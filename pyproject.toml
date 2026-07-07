@@ -132,3 +132,20 @@ addopts = "-ra"
 [tool.coverage.run]
 source_pkgs = ["astropath"]
 branch = true
+
+[tool.coverage.report]
+# ≥90% total-coverage gate (SPEC §15.3, T-TEST-19); enforced in CI via
+# `--cov-fail-under=90` on the full suite. Principled excludes only — no source
+# file is ever omitted to pass the bar. `exclude_also` ADDS to coverage's default
+# `# pragma: no cover`; the patterns below are lines that never execute by design.
+fail_under = 90
+# precision=2 makes fail_under compare at two decimals: without it coverage rounds
+# the total to an integer (e.g. 89.89 -> 90) and would PASS a sub-90 run, silently
+# weakening the gate below SPEC's number. With it, 89.89% correctly fails.
+precision = 2
+show_missing = true
+exclude_also = [
+    "raise NotImplementedError",
+    "if __name__ == .__main__.:",
+    "@(typing\\.)?overload",
+]
