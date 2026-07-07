@@ -83,10 +83,24 @@ class _FakeRoute53Client:
         return {"ResourceRecordSets": [dict(r) for r in self._rrsets]}
 
     async def change_resource_record_sets(self, **kwargs: Any) -> dict[str, Any]:
-        self.change_batches.append(kwargs["ChangeBatch"])
+        batch = kwargs["ChangeBatch"]
+        self.change_batches.append(batch)
         if "change" in self._errors:
             raise _client_error()
+        # Apply to internal state so a later read reflects the write (realistic
+        # for read-modify-write / multi-op lifecycle tests).
+        for change in batch["Changes"]:
+            self._apply(change)
         return {"ChangeInfo": {"Id": "/change/C-FAKE", "Status": "PENDING"}}
+
+    def _apply(self, change: dict[str, Any]) -> None:
+        rrset = change["ResourceRecordSet"]
+        name, rtype = rrset["Name"], rrset["Type"]
+        self._rrsets = [
+            r for r in self._rrsets if not (r["Name"] == name and r["Type"] == rtype)
+        ]
+        if change["Action"] == "UPSERT":
+            self._rrsets.append(dict(rrset))
 
     async def get_change(self, **kwargs: Any) -> dict[str, Any]:
         self.get_change_calls.append(kwargs)
@@ -296,3 +310,76 @@ async def test_list_error_maps_to_provider_error() -> None:
     with pytest.raises(ProviderError) as exc:
         await provider.present(_ZONE, _RECORD, ["tok"])
     assert _SENSITIVE_MARKER not in str(exc.value)
+
+
+# --------------------------------------------------------------------------- #
+# T-M5-02 — multi-value TXT coexistence (SPEC §5.4, §5.8)
+# --------------------------------------------------------------------------- #
+def _last_change(client: _FakeRoute53Client) -> dict[str, Any]:
+    change: dict[str, Any] = client.change_batches[-1]["Changes"][0]
+    return change
+
+
+def _values_of(change: dict[str, Any]) -> list[str]:
+    return [rr["Value"] for rr in change["ResourceRecordSet"]["ResourceRecords"]]
+
+
+async def test_present_two_values_at_once() -> None:
+    client = _FakeRoute53Client(rrsets=[])
+    provider = _provider(client)
+    await provider.present(_ZONE, _RECORD, ["tok1", "tok2"])
+    change = _only_change(client)
+    assert change["Action"] == "UPSERT"
+    assert _values_of(change) == ['"tok1"', '"tok2"']
+
+
+async def test_present_adds_value_without_clobbering_existing() -> None:
+    # apex + wildcard SAN: a second challenge on the same name must coexist.
+    client = _FakeRoute53Client(rrsets=[_txt_rrset('"tok1"')])
+    provider = _provider(client)
+    await provider.present(_ZONE, _RECORD, ["tok2"])
+    change = _only_change(client)
+    assert change["Action"] == "UPSERT"
+    assert _values_of(change) == ['"tok1"', '"tok2"']  # both held concurrently
+
+
+async def test_cleanup_one_of_two_keeps_the_other() -> None:
+    client = _FakeRoute53Client(rrsets=[_txt_rrset('"tok1"', '"tok2"')])
+    provider = _provider(client)
+    await provider.cleanup(_ZONE, _RECORD, ["tok1"])
+    change = _only_change(client)
+    # Reduced set is UPSERTed (not a whole-rrset delete) — tok2 survives.
+    assert change["Action"] == "UPSERT"
+    assert _values_of(change) == ['"tok2"']
+
+
+async def test_cleanup_removing_all_values_deletes_rrset() -> None:
+    client = _FakeRoute53Client(rrsets=[_txt_rrset('"tok1"', '"tok2"')])
+    provider = _provider(client)
+    await provider.cleanup(_ZONE, _RECORD, ["tok1", "tok2"])
+    change = _only_change(client)
+    assert change["Action"] == "DELETE"
+    assert _values_of(change) == ['"tok1"', '"tok2"']  # exact body echoed
+
+
+async def test_multivalue_lifecycle_coexist_then_delete() -> None:
+    # Full sequence against a stateful fake: two independent challenges land,
+    # coexist, then each is cleaned up in turn — the rrset is deleted only when
+    # the last value is removed (SPEC §5.4).
+    client = _FakeRoute53Client(rrsets=[])
+    provider = _provider(client)
+
+    await provider.present(_ZONE, _RECORD, ["tok1"])
+    assert _values_of(_last_change(client)) == ['"tok1"']
+
+    await provider.present(_ZONE, _RECORD, ["tok2"])
+    assert _last_change(client)["Action"] == "UPSERT"
+    assert _values_of(_last_change(client)) == ['"tok1"', '"tok2"']
+
+    await provider.cleanup(_ZONE, _RECORD, ["tok1"])
+    assert _last_change(client)["Action"] == "UPSERT"
+    assert _values_of(_last_change(client)) == ['"tok2"']
+
+    await provider.cleanup(_ZONE, _RECORD, ["tok2"])
+    assert _last_change(client)["Action"] == "DELETE"
+    assert _values_of(_last_change(client)) == ['"tok2"']

@@ -115,7 +115,14 @@ def _quote(token: str) -> str:
 
 @register
 class Route53Provider(Provider):
-    """AWS Route 53 provider (SPEC §5.8)."""
+    """AWS Route 53 provider (SPEC §5.8).
+
+    Multi-value contract (``supports_multivalue=True``, SPEC §5.4): one rrset may
+    hold several challenge values at once. ``present`` unions a new value into the
+    existing set (an apex + wildcard SAN, or a 2nd Certificate, coexist rather
+    than clobber); ``cleanup`` removes only the named value(s) and deletes the
+    rrset only once the last value is gone. Both are idempotent (SPEC §5.3).
+    """
 
     type = "route53"
     supports_multivalue = True
