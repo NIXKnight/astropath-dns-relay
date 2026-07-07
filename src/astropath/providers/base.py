@@ -42,14 +42,14 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from collections.abc import Mapping
-from typing import Any, ClassVar, TypeAlias
+from typing import Any, ClassVar
 
 from pydantic import BaseModel
 
 # ``type`` is a ClassVar attribute name on Provider (SPEC §5.1), which shadows
 # the builtin inside the class body. This module-scope alias lets return
 # annotations name "a Pydantic model class" without touching the shadowed name.
-ConfigSchema: TypeAlias = type[BaseModel]
+type ConfigSchema = type[BaseModel]
 
 __all__ = [
     "REGISTRY",

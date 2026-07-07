@@ -79,8 +79,11 @@ class Database:
         """Build from a ``postgresql+asyncpg://`` DSN (SPEC §10.2).
 
         The engine is created lazily — no connection is opened until the first
-        session runs a statement — so construction never blocks or fails on a
-        transiently-unreachable database.
+        session runs a statement — so *construction* here never blocks. DB-mode
+        boot does not lean on that laziness: ``validate_db_startup`` (startup.py,
+        T-M6-10) eagerly pings the database and requires the schema at head, so a
+        transiently-unreachable or un-migrated database fails the boot fast rather
+        than surfacing on the first request.
         """
         return cls(create_async_engine(dsn, echo=echo, future=True))
 

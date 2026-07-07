@@ -48,9 +48,9 @@ jobs:
         with:
           # Pin the uv tool for reproducible CI; bump alongside local upgrades.
           version: "0.8.17"
-          # Target the declared floor (pyproject requires-python = ">=3.11");
-          # this also matches [tool.mypy] python_version = "3.11".
-          python-version: "3.11"
+          # Target the declared floor (pyproject requires-python = ">=3.12");
+          # this also matches [tool.mypy] python_version = "3.12".
+          python-version: "3.12"
           enable-cache: true
 
       - name: Install dependencies (frozen)

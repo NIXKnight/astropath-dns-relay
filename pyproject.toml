@@ -8,7 +8,7 @@ build-backend = "hatchling.build"
 name = "astropath-dns-relay"
 version = "0.1.0"
 description = "Self-hosted ACME DNS-01 solver gateway (RFC2136/TSIG front end for cert-manager)."
-requires-python = ">=3.11"
+requires-python = ">=3.12"
 license = "GPL-3.0-or-later"
 license-files = ["LICENSE"]
 authors = [{ name = "Saad Ali", email = "engr.saadali786@gmail.com" }]
@@ -30,7 +30,6 @@ classifiers = [
     "License :: OSI Approved :: GNU General Public License v3 or later (GPLv3+)",
     "Operating System :: POSIX :: Linux",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
     "Topic :: Internet :: Name Service (DNS)",
@@ -74,7 +73,7 @@ packages = ["src/astropath"]
 
 [tool.ruff]
 line-length = 88
-target-version = "py311"
+target-version = "py312"
 src = ["src", "tests"]
 
 [tool.ruff.lint]
@@ -98,7 +97,7 @@ extend-immutable-calls = [
 
 [tool.black]
 line-length = 88
-target-version = ["py311"]
+target-version = ["py312"]
 
 [tool.bandit]
 # SAST scope: shipped application source only. Tests feed deliberately weak
@@ -114,7 +113,7 @@ exclude_dirs = ["tests", "frontend", ".venv"]
 skips = ["B104"]
 
 [tool.mypy]
-python_version = "3.11"
+python_version = "3.12"
 strict = true
 plugins = ["pydantic.mypy"]
 mypy_path = "src"

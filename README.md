@@ -1,7 +1,7 @@
 # astropath-dns-relay
 
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](./LICENSE)
-[![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/)
+[![Python 3.12+](https://img.shields.io/badge/python-3.12%2B-blue.svg)](https://www.python.org/)
 
 **A self-hosted, multi-backend ACME DNS-01 solver gateway.** astropath-dns-relay presents an RFC2136 (DNS UPDATE) + TSIG front end that cert-manager's built-in `rfc2136` DNS-01 solver talks to natively, and translates each DNS-01 challenge into an API call against a pluggable DNS **provider backend** (Hurricane Electric first, Route53 second). A FastAPI + Vite/React admin plane manages backends and domain routing.
 
