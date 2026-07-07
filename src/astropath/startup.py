@@ -28,20 +28,34 @@ half-serve. The M1 subset validates:
 * every configured TSIG algorithm maps to a dnspython algorithm.
 
 All failures raise :class:`StartupError` with a message that names the offending
-zone / provider / algorithm / key **position** — never a secret value. M6
-(:mod:`T-M6-10`) extends this to the database world; the shape stays identical.
+zone / provider / algorithm / key **position** — never a secret value.
+
+For the DB-backed composition (:func:`astropath.main.serve`), :func:`validate_db_startup`
+extends the checklist to the full SPEC §11.3 set before readiness is bound: the
+SPA-directory presence policy, database reachability (a bounded connect smoke
+test), the schema being at the Alembic head, every ``Backend.type`` resolving in
+the provider registry, and every ``TsigKey.algorithm`` mapping. Messages carry
+revision ids / provider / algorithm names — never a DSN, key, or secret value.
 """
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
+
+from sqlalchemy import Connection
+from sqlalchemy.ext.asyncio import AsyncEngine
+from sqlmodel import select
 
 from astropath.bootstrap import BootstrapConfig, BootstrapError, load_bootstrap
 from astropath.crypto import InvalidToken, Kek, KekError
 from astropath.data_plane.tsig import UnknownAlgorithm, algorithm_from_text
+from astropath.db import Database
+from astropath.models import Backend, TsigKey
 from astropath.providers.base import UnknownProvider, get_provider
+from astropath.settings import Settings
 
-__all__ = ["StartupError", "validate_and_load"]
+__all__ = ["StartupError", "validate_and_load", "validate_db_startup"]
 
 
 class StartupError(RuntimeError):
@@ -109,3 +123,83 @@ def validate_and_load(
             ) from exc
 
     return kek, config
+
+
+def _alembic_head(alembic_ini: str) -> str | None:
+    """The head revision id per the Alembic scripts (not a secret)."""
+    from alembic.config import Config
+    from alembic.script import ScriptDirectory
+
+    return ScriptDirectory.from_config(Config(alembic_ini)).get_current_head()
+
+
+async def _db_current_revision(engine: AsyncEngine) -> str | None:
+    """The revision stamped in the database's ``alembic_version`` (or ``None``)."""
+    from alembic.migration import MigrationContext
+
+    def _read(sync_conn: Connection) -> str | None:
+        return MigrationContext.configure(sync_conn).get_current_revision()
+
+    async with engine.connect() as conn:
+        return await conn.run_sync(_read)
+
+
+async def validate_db_startup(
+    database: Database,
+    settings: Settings,
+    *,
+    alembic_ini: str = "alembic.ini",
+    connect_timeout: float = 5.0,
+) -> None:
+    """Fail-fast the DB-backed startup preconditions (SPEC §11.3, T-M6-10).
+
+    Runs before readiness is bound, checking (in fail-fast order): the SPA
+    directory presence policy, database reachability (bounded), the schema being
+    at the Alembic head, provider-registry integrity for every ``Backend`` row,
+    and the TSIG-algorithm mapping for every ``TsigKey`` row. Raises
+    :class:`StartupError` with a message that never carries a DSN, key, or secret
+    value — only revision ids, provider names, algorithm names, and the SPA path.
+    """
+    # 1. SPA directory presence policy — a cheap local check; fail before any IO.
+    if settings.spa_dir is not None and not Path(settings.spa_dir).is_dir():
+        raise StartupError(
+            f"configured SPA directory does not exist: {settings.spa_dir}"
+        )
+
+    # 2. Database reachability — a bounded connect smoke test (no DSN in the error).
+    try:
+        await asyncio.wait_for(database.ping(), timeout=connect_timeout)
+    except Exception as exc:  # noqa: BLE001 - normalize any driver error to a fail-fast
+        raise StartupError(
+            f"database is unreachable at startup ({type(exc).__name__}); "
+            "check ASTROPATH_DATABASE_DSN"
+        ) from exc
+
+    # 3. Schema is at head — never serve on a stale or absent migration.
+    head = _alembic_head(alembic_ini)
+    current = await _db_current_revision(database.engine)
+    if current != head:
+        raise StartupError(
+            f"database schema is not current (at revision {current!r}, expected "
+            f"{head!r}); run 'alembic upgrade head'"
+        )
+
+    # 4. Provider-registry integrity + TSIG-algorithm mapping for every row.
+    async with database.session() as session:
+        backends = (await session.execute(select(Backend))).scalars().all()
+        tsig_keys = (await session.execute(select(TsigKey))).scalars().all()
+    for backend in backends:
+        try:
+            get_provider(backend.type)
+        except UnknownProvider as exc:
+            raise StartupError(
+                f"backend {backend.name!r} references unknown provider "
+                f"{backend.type!r}"
+            ) from exc
+    for key in tsig_keys:
+        try:
+            algorithm_from_text(key.algorithm)
+        except UnknownAlgorithm as exc:
+            raise StartupError(
+                f"TSIG key {key.name!r} uses unsupported algorithm {key.algorithm!r}"
+            ) from exc

@@ -69,7 +69,7 @@ from astropath.logging_config import configure_logging
 from astropath.observability import DataPlaneMetrics, start_metrics_server
 from astropath.providers._http import build_async_client
 from astropath.settings import Settings, get_settings
-from astropath.startup import StartupError, validate_and_load
+from astropath.startup import StartupError, validate_and_load, validate_db_startup
 from astropath.supervisor import RestartLimiter, supervise
 
 __all__ = ["build_management_server", "main", "run", "serve"]
@@ -307,11 +307,16 @@ async def serve(
 
     database = Database.from_dsn(settings.database_dsn.get_secret_value())
     cache = RoutingCache(make_db_loader(database.sessionmaker, kek, client))
-    await _safe_initial_refresh(cache)
 
     dns_server: Rfc2136Server | None = None
     dns_task: asyncio.Task[None] | None = None
     try:
+        # Fail-fast the DB-backed preconditions before binding readiness (T-M6-10):
+        # DB reachable, schema at head, every provider/algorithm valid, SPA dir
+        # present. A failure raises StartupError; the finally disposes the DB
+        # engine + client and main() returns 2.
+        await validate_db_startup(database, settings)
+        await _safe_initial_refresh(cache)
         runtime = build_data_plane(config, http_client=client)
         routing = _CompositeRouting(cache, runtime.routing)
         dispatcher = Dispatcher(
