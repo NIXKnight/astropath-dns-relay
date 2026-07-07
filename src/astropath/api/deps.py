@@ -41,6 +41,7 @@ from fastapi import Request
 from prometheus_client import CollectorRegistry
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from astropath.api.ratelimit import LoginRateLimiter
 from astropath.cache import RoutingCache
 from astropath.crypto import Kek
 from astropath.db import Database
@@ -51,6 +52,7 @@ __all__ = [
     "get_cache",
     "get_database",
     "get_kek",
+    "get_rate_limiter",
     "get_resources",
     "get_session",
     "get_settings_dep",
@@ -119,3 +121,9 @@ def get_kek(request: Request) -> Kek:
     if kek is None:  # pragma: no cover - guarded by startup validation
         raise RuntimeError("credential KEK is not configured for this app instance")
     return kek
+
+
+def get_rate_limiter(request: Request) -> LoginRateLimiter:
+    """Injected in-process login rate limiter (SPEC §8.5)."""
+    limiter: LoginRateLimiter = get_resources(request).rate_limiter
+    return limiter

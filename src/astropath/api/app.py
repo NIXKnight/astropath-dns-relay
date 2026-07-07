@@ -37,6 +37,7 @@ from prometheus_client import CollectorRegistry
 from astropath.api import routes_auth
 from astropath.api.auth import AuthService
 from astropath.api.deps import AppResources
+from astropath.api.ratelimit import LoginRateLimiter
 from astropath.api.session import add_session_middleware
 from astropath.cache import RoutingCache
 from astropath.crypto import Kek
@@ -86,6 +87,7 @@ def create_app(
         kek=kek,
         metrics_registry=metrics_registry,
         auth=AuthService(database, settings),
+        rate_limiter=LoginRateLimiter(),
     )
 
     # Signed (not encrypted) session cookie carrying only an opaque admin marker.

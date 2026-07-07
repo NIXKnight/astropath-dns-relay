@@ -26,15 +26,26 @@ opaque session marker; ``POST /auth/logout`` clears it. The admin-password chang
 
 from __future__ import annotations
 
+import logging
+
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, Field
 
 from astropath.api.auth import AuthService, get_auth, require_admin
+from astropath.api.deps import get_rate_limiter
+from astropath.api.ratelimit import LoginRateLimiter
 from astropath.api.session import clear_session, mark_admin
 
 __all__ = ["LoginRequest", "router"]
 
+log = logging.getLogger("astropath.api.auth")
+
 router = APIRouter(prefix="/api/v1/auth", tags=["auth"])
+
+
+def _source(request: Request) -> str:
+    """The rate-limit key: the (proxy-corrected) client IP, or a stable fallback."""
+    return request.client.host if request.client is not None else "unknown"
 
 
 class LoginRequest(BaseModel):
@@ -66,18 +77,30 @@ async def login(
     payload: LoginRequest,
     request: Request,
     auth: AuthService = Depends(get_auth),
+    limiter: LoginRateLimiter = Depends(get_rate_limiter),
 ) -> dict[str, bool]:
-    """Verify the admin password and set the session cookie (SPEC §8, §9.1).
+    """Verify the admin password and set the session cookie (SPEC §8, §8.5, §9.1).
 
     A wrong password returns 401 without distinguishing "no such admin" from
-    "bad password" (there is a single admin). The password never appears in a
-    log or an error body.
+    "bad password" (there is a single admin). Repeated failures from a source lock
+    it out (429) with exponential backoff. The password never appears in a log or
+    an error body — only the source key is logged on failure.
     """
+    source = _source(request)
+    if not limiter.is_allowed(source):
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="too many login attempts; try again later",
+            headers={"Retry-After": str(limiter.retry_after(source))},
+        )
     if not await auth.verify_admin_password(payload.password):
+        limiter.record_failure(source)
+        log.warning("login_failed", extra={"source": source})  # never the password
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="invalid credentials",
         )
+    limiter.record_success(source)
     mark_admin(request)
     return {"authenticated": True}
 
