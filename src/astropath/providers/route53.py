@@ -53,7 +53,8 @@ factory closure; it is never logged and never embedded in an error message
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+import asyncio
+from collections.abc import Awaitable, Callable, Mapping
 from contextlib import AbstractAsyncContextManager
 from typing import Any
 
@@ -77,6 +78,9 @@ _TXT_TTL = 60
 _CONNECT_TIMEOUT = 5
 _READ_TIMEOUT = 10
 _MAX_POOL_CONNECTIONS = 20
+# Optional INSYNC propagation poll (T-M5-04): interval + attempt bound.
+_INSYNC_POLL_INTERVAL = 2.0
+_INSYNC_MAX_ATTEMPTS = 30
 
 # The aiobotocore route53 client is dynamically generated and has no precise
 # public type; treat it as ``Any`` at the seam.
@@ -96,6 +100,8 @@ class Route53Config(BaseModel):
     secret_access_key: SecretStr
     hosted_zone_id: str
     region: str | None = None
+    # Opt-in: poll GetChange until INSYNC before signalling live (T-M5-04, §5.8).
+    await_insync: bool = False
 
 
 def _normalize_name(record_name: str) -> str:
@@ -135,11 +141,19 @@ class Route53Provider(Provider):
         client_factory: Route53ClientFactory,
         region: str | None = None,
         ttl: int = _TXT_TTL,
+        await_insync: bool = False,
+        sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+        insync_interval: float = _INSYNC_POLL_INTERVAL,
+        insync_max_attempts: int = _INSYNC_MAX_ATTEMPTS,
     ) -> None:
         self._hosted_zone_id = hosted_zone_id
         self._client_factory = client_factory
         self._region = region
         self._ttl = ttl
+        self._await_insync = await_insync
+        self._sleep = sleep
+        self._insync_interval = insync_interval
+        self._insync_max_attempts = insync_max_attempts
 
     @property
     def hosted_zone_id(self) -> str:
@@ -172,6 +186,7 @@ class Route53Provider(Provider):
             hosted_zone_id=cfg.hosted_zone_id,
             client_factory=cls._default_client_factory(cfg),
             region=cfg.region,
+            await_insync=cfg.await_insync,
         )
 
     @staticmethod
@@ -301,13 +316,37 @@ class Route53Provider(Provider):
             ]
         }
         try:
-            await client.change_resource_record_sets(
+            resp = await client.change_resource_record_sets(
                 HostedZoneId=self._hosted_zone_id, ChangeBatch=batch
             )
         except (ClientError, BotoCoreError) as exc:
             raise ProviderError(
                 f"route53 {action} failed for {name!r}: {type(exc).__name__}"
             ) from exc
+        if self._await_insync:
+            await self._wait_insync(client, resp["ChangeInfo"]["Id"])
+
+    async def _wait_insync(self, client: Route53Client, change_id: str) -> None:
+        """Poll GetChange until the change is INSYNC (opt-in; T-M5-04, SPEC §5.8).
+
+        Reduces cert-manager self-check flakiness by only signalling the record
+        live once Route 53 reports propagation to all its authoritative servers.
+        Bounded by ``insync_max_attempts``; a timeout raises :class:`ProviderError`.
+        """
+        for _ in range(self._insync_max_attempts):
+            try:
+                resp = await client.get_change(Id=change_id)
+            except (ClientError, BotoCoreError) as exc:
+                raise ProviderError(
+                    f"route53 GetChange failed: {type(exc).__name__}"
+                ) from exc
+            if resp["ChangeInfo"]["Status"] == "INSYNC":
+                return
+            await self._sleep(self._insync_interval)
+        raise ProviderError(
+            f"route53 change {change_id!r} not INSYNC after "
+            f"{self._insync_max_attempts} polls"
+        )
 
 
 def _record_values(rrset: dict[str, Any] | None) -> list[str]:

@@ -383,3 +383,71 @@ async def test_multivalue_lifecycle_coexist_then_delete() -> None:
     await provider.cleanup(_ZONE, _RECORD, ["tok2"])
     assert _last_change(client)["Action"] == "DELETE"
     assert _values_of(_last_change(client)) == ['"tok2"']
+
+
+# --------------------------------------------------------------------------- #
+# T-M5-04 — optional INSYNC propagation poll (SPEC §5.8)
+# --------------------------------------------------------------------------- #
+def _recording_sleep() -> tuple[Any, list[float]]:
+    sleeps: list[float] = []
+
+    async def _sleep(delay: float) -> None:
+        sleeps.append(delay)
+
+    return _sleep, sleeps
+
+
+async def test_await_insync_polls_get_change() -> None:
+    sleep, sleeps = _recording_sleep()
+    client = _FakeRoute53Client(rrsets=[], change_statuses=("INSYNC",))
+    provider = _provider(client, await_insync=True, sleep=sleep)
+    await provider.present(_ZONE, _RECORD, ["tok"])
+    assert len(client.get_change_calls) == 1
+    assert client.get_change_calls[0]["Id"] == "/change/C-FAKE"
+    assert sleeps == []  # already INSYNC — no wait needed
+
+
+async def test_await_insync_waits_through_pending() -> None:
+    sleep, sleeps = _recording_sleep()
+    client = _FakeRoute53Client(rrsets=[], change_statuses=("PENDING", "INSYNC"))
+    provider = _provider(client, await_insync=True, sleep=sleep, insync_interval=1.5)
+    await provider.present(_ZONE, _RECORD, ["tok"])
+    assert len(client.get_change_calls) == 2  # PENDING then INSYNC
+    assert sleeps == [1.5]  # slept once between the two polls
+
+
+async def test_await_insync_times_out_raises() -> None:
+    sleep, _sleeps = _recording_sleep()
+    client = _FakeRoute53Client(rrsets=[], change_statuses=("PENDING",))
+    provider = _provider(client, await_insync=True, sleep=sleep, insync_max_attempts=3)
+    with pytest.raises(ProviderError, match="not INSYNC"):
+        await provider.present(_ZONE, _RECORD, ["tok"])
+    assert len(client.get_change_calls) == 3  # bounded by insync_max_attempts
+
+
+async def test_await_insync_get_change_error_maps_to_provider_error() -> None:
+    sleep, _sleeps = _recording_sleep()
+    client = _FakeRoute53Client(rrsets=[], errors={"getchange"})
+    provider = _provider(client, await_insync=True, sleep=sleep)
+    with pytest.raises(ProviderError) as exc:
+        await provider.present(_ZONE, _RECORD, ["tok"])
+    assert _SENSITIVE_MARKER not in str(exc.value)
+
+
+async def test_await_insync_disabled_skips_poll() -> None:
+    client = _FakeRoute53Client(rrsets=[])
+    provider = _provider(client)  # await_insync defaults False
+    await provider.present(_ZONE, _RECORD, ["tok"])
+    assert client.get_change_calls == []
+
+
+def test_from_config_reads_await_insync_flag() -> None:
+    provider = Route53Provider.from_config(
+        {
+            "access_key_id": _ACCESS_KEY,
+            "secret_access_key": _SECRET_KEY,
+            "hosted_zone_id": _HOSTED_ZONE_ID,
+            "await_insync": True,
+        }
+    )
+    assert provider._await_insync is True
