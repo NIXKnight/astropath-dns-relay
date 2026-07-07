@@ -36,6 +36,8 @@ __all__ = [
     "BackendCreate",
     "BackendRead",
     "BackendUpdate",
+    "DomainCreate",
+    "DomainRead",
 ]
 
 
@@ -66,3 +68,31 @@ class BackendRead(BaseModel):
     type: str
     created_at: datetime
     updated_at: datetime
+
+
+class DomainCreate(BaseModel):
+    """Map a zone to a backend + record handle, with the HE per-record key (§9.1)."""
+
+    zone: str = Field(min_length=1, max_length=255)
+    backend_id: int
+    record_name: str = Field(min_length=1, max_length=255)
+    he_dynamic_key: str | None = Field(
+        default=None,
+        repr=False,
+        description="HE per-record dynamic key (write-only, KEK-encrypted; HIGH-7)",
+    )
+
+
+class DomainRead(BaseModel):
+    """Domain view — the HE per-record secret is never returned (SPEC §9.2).
+
+    ``has_secret`` exposes only *whether* a domain-scoped key is stored, so the UI
+    can render the field state without revealing the value.
+    """
+
+    id: int
+    zone: str
+    backend_id: int
+    record_name: str
+    created_at: datetime
+    has_secret: bool

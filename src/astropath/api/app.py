@@ -34,7 +34,7 @@ from __future__ import annotations
 from fastapi import APIRouter, FastAPI, Response
 from prometheus_client import CollectorRegistry
 
-from astropath.api import routes_auth, routes_backends
+from astropath.api import routes_auth, routes_backends, routes_domains
 from astropath.api.auth import AuthService
 from astropath.api.csrf import CsrfOriginMiddleware
 from astropath.api.deps import AppResources
@@ -101,6 +101,7 @@ def create_app(
     app.include_router(_meta_router())
     app.include_router(routes_auth.router)
     app.include_router(routes_backends.router)
+    app.include_router(routes_domains.router)
 
     @app.get("/healthz", tags=["probes"], summary="Liveness (process up)")
     async def healthz() -> dict[str, str]:
