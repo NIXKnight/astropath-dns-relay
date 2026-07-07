@@ -1,0 +1,59 @@
+# AstropathDNSRelay -- cert-manager ClusterIssuer (Let's Encrypt STAGING).
+# Task: T-DEPLOY-01 (canonical rfc2136 solver shape). SPEC 14.1, 14.2, 14.6.
+#
+# This is the CANONICAL rfc2136 solver. The prod issuer
+# (clusterissuer-letsencrypt-prod.yaml, T-DEPLOY-04) mirrors it against the prod
+# ACME server. Issue against STAGING until the challenge goes green, THEN flip
+# the Certificate's issuerRef to letsencrypt-prod (see RUNBOOK.md) so a failed
+# staging run never burns a Let's Encrypt prod rate-limit slot.
+#
+# Placeholders (substitute from the private ops repo; NEVER commit real values):
+#   <your-email>    ACME account contact address
+#   <gateway-ip>    AstropathDNSRelay gateway LAN IP -- an IP LITERAL, not a
+#                   hostname, and not the public DNS provider (SPEC 14.2)
+#   <dns-port>      RFC2136 listener port on the gateway (SPEC 18.2: avoid 53 /
+#                   5300 which collide with Pi-hole / PowerDNS-auth)
+#   <tsig-key-name> MUST byte-match the server key name emitted by
+#                   `astropath-bootstrap` (default `astropath-tsig.`, trailing
+#                   dot included). Mismatch -> BADKEY (SPEC 14.2).
+#   <domain>        apex zone whose `*.<domain>` wildcard you are issuing
+---
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: letsencrypt-staging
+  labels:
+    app.kubernetes.io/part-of: astropath-dns-relay
+spec:
+  acme:
+    # Let's Encrypt STAGING directory: untrusted roots, generous rate limits.
+    server: https://acme-staging-v02.api.letsencrypt.org/directory
+    email: <your-email>
+    privateKeySecretRef:
+      # cert-manager creates/stores the ACME account key here, in the
+      # cluster-resource namespace (default: cert-manager).
+      name: letsencrypt-staging-account-key
+    solvers:
+      - selector:
+          # Scope this solver to the target zone. `dnsZones` matches the zone of
+          # the challenge name `_acme-challenge.<domain>`.
+          dnsZones:
+            - "<domain>"
+        dns01:
+          rfc2136:
+            # IP literal of the AstropathDNSRelay gateway front end. cert-manager
+            # sends the TSIG-signed DNS UPDATE here (SPEC 14.2).
+            nameserver: "<gateway-ip>:<dns-port>"
+            # Byte-exact match to the server TSIG key name, trailing dot included.
+            tsigKeyName: <tsig-key-name>
+            # PIN EXPLICITLY. cert-manager defaults tsigAlgorithm to HMACMD5 when
+            # omitted -> silent NOTAUTH/BADKEY against astropath's SHA-256 server
+            # (SPEC 14.1). Dashless CRD spelling; the server stores dnspython's
+            # dashed `hmac-sha256` -- correct boundary translation, both valid.
+            tsigAlgorithm: HMACSHA256
+            tsigSecretSecretRef:
+              # Resolved in the CLUSTER-RESOURCE namespace (default cert-manager),
+              # NOT the workload namespace (SPEC 14.4). name/key match the Secret
+              # from `astropath-bootstrap secret-yaml` (tsig-secret.example.yaml).
+              name: tsig-secret
+              key: tsig-secret-key
