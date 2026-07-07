@@ -290,11 +290,11 @@ async def serve(
 
     owns_client = http_client is None
     client = http_client if http_client is not None else build_async_client()
+    # Metrics are exposed by the FastAPI app's /metrics route (T-M3-14), which
+    # serves this exact registry — the M1 interim start_http_server is folded into
+    # the app, so there is no separate metrics port in the two-plane path.
     registry = CollectorRegistry()
     metrics = DataPlaneMetrics(registry=registry)
-    metrics_server, _thread = start_metrics_server(
-        settings.metrics_port, registry=registry
-    )
 
     database = Database.from_dsn(settings.database_dsn.get_secret_value())
     cache = RoutingCache(make_db_loader(database.sessionmaker, kek, client))
@@ -383,7 +383,6 @@ async def serve(
         await database.dispose()
         if owns_client:
             await client.aclose()
-        metrics_server.shutdown()
 
 
 def main() -> int:

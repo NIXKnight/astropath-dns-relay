@@ -31,8 +31,13 @@ probe endpoints, so M4 can append the static mount + catch-all without reorderin
 
 from __future__ import annotations
 
-from fastapi import APIRouter, FastAPI, Response
-from prometheus_client import CollectorRegistry
+from typing import Any
+
+from fastapi import APIRouter, Depends, FastAPI, Response
+from fastapi.openapi.docs import get_redoc_html, get_swagger_ui_html
+from fastapi.responses import HTMLResponse
+from prometheus_client import CONTENT_TYPE_LATEST, REGISTRY, CollectorRegistry
+from prometheus_client import generate_latest as prometheus_generate_latest
 
 from astropath.api import (
     routes_auth,
@@ -42,7 +47,7 @@ from astropath.api import (
     routes_tokens,
     routes_tsig,
 )
-from astropath.api.auth import AuthService
+from astropath.api.auth import AuthService, require_admin
 from astropath.api.csrf import CsrfOriginMiddleware
 from astropath.api.deps import AppResources
 from astropath.api.ratelimit import LoginRateLimiter
@@ -52,9 +57,11 @@ from astropath.crypto import Kek
 from astropath.db import Database
 from astropath.settings import Settings
 
-__all__ = ["API_V1_PREFIX", "create_app"]
+__all__ = ["API_V1_PREFIX", "OPENAPI_URL", "create_app"]
 
 API_V1_PREFIX = "/api/v1"
+#: Served by our own admin-guarded route (the built-in unauthenticated one is off).
+OPENAPI_URL = "/openapi.json"
 
 
 def _meta_router() -> APIRouter:
@@ -83,10 +90,16 @@ def create_app(
     ``app.state.astropath`` — the app serves from exactly those objects, never a
     re-created copy (the ownership invariant T-TEST-15 asserts).
     """
+    # Disable FastAPI's built-in (unauthenticated) docs + schema routes; they are
+    # re-registered below behind require_admin (MED-6). /metrics, /healthz, /readyz
+    # are added explicitly with their own auth posture.
     app = FastAPI(
         title="AstropathDNSRelay",
         version="0.1.0",
         summary="Self-hosted ACME DNS-01 solver gateway management API.",
+        docs_url=None,
+        redoc_url=None,
+        openapi_url=None,
     )
     app.state.astropath = AppResources(
         settings=settings,
@@ -112,6 +125,42 @@ def create_app(
     app.include_router(routes_tsig.router)
     app.include_router(routes_tokens.router)
     app.include_router(routes_events.router)
+
+    # --- API schema + interactive docs, admin-only (MED-6) --------------------- #
+    # These are LAN-only *and* auth-gated: do not rely on /api/v1 protection to
+    # cover them. The browser loads /docs (session cookie) which then fetches the
+    # schema from OPENAPI_URL with the same cookie, so both stay behind require_admin.
+    @app.get(
+        OPENAPI_URL, include_in_schema=False, dependencies=[Depends(require_admin)]
+    )
+    async def openapi_schema() -> dict[str, Any]:
+        return app.openapi()
+
+    @app.get("/docs", include_in_schema=False, dependencies=[Depends(require_admin)])
+    async def swagger_ui() -> HTMLResponse:
+        return get_swagger_ui_html(
+            openapi_url=OPENAPI_URL, title=f"{app.title} - Swagger UI"
+        )
+
+    @app.get("/redoc", include_in_schema=False, dependencies=[Depends(require_admin)])
+    async def redoc_ui() -> HTMLResponse:
+        return get_redoc_html(openapi_url=OPENAPI_URL, title=f"{app.title} - ReDoc")
+
+    # --- Prometheus scrape, unauthenticated but LAN-only (MED-6) --------------- #
+    # Folds the M1 interim start_http_server into the app: exposes the *same*
+    # registry main() writes to, so every data-plane metric name is preserved.
+    # Prometheus exposition carries only metric names + non-secret label values.
+    @app.get("/metrics", include_in_schema=False)
+    async def metrics() -> Response:
+        resources: AppResources = app.state.astropath
+        registry = (
+            resources.metrics_registry
+            if resources.metrics_registry is not None
+            else REGISTRY
+        )
+        return Response(
+            prometheus_generate_latest(registry), media_type=CONTENT_TYPE_LATEST
+        )
 
     @app.get("/healthz", tags=["probes"], summary="Liveness (process up)")
     async def healthz() -> dict[str, str]:
