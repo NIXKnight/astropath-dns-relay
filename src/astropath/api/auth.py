@@ -41,13 +41,19 @@ from datetime import UTC, datetime
 
 from fastapi import HTTPException, Request, Security, status
 from fastapi.security import APIKeyCookie, APIKeyHeader
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select
 
 from astropath.api.session import SESSION_COOKIE, session_is_admin
 from astropath.db import Database
-from astropath.models import ApiToken
+from astropath.models import AdminCredential, ApiToken
 from astropath.settings import Settings
-from astropath.store import hash_token, verify_password
+from astropath.store import (
+    hash_password,
+    hash_token,
+    password_needs_rehash,
+    verify_password,
+)
 
 __all__ = ["AuthService", "get_auth", "require_admin"]
 
@@ -90,18 +96,63 @@ class AuthService:
             await session.commit()
             return True
 
+    async def _stored_admin_hash(self, session: AsyncSession) -> tuple[str, bool]:
+        """Resolve the admin hash, preferring the DB row over the env seed (§6.3).
+
+        Returns ``(hash, from_row)``: the ``AdminCredential`` row (id=1) is the
+        source of truth once a password change persisted it; the env-seeded
+        ``ASTROPATH_ADMIN_PASSWORD_HASH`` is the first-boot fallback.
+        """
+        row = await session.get(AdminCredential, 1)
+        if row is not None:
+            return row.password_hash, True
+        return self._settings.admin_password_hash.get_secret_value(), False
+
     async def verify_admin_password(self, password: str) -> bool:
-        """Verify the admin password against the env-seeded hash (SPEC §7.4).
+        """Verify the admin password (AdminCredential row first, else env; §6.3).
 
         argon2 verify is CPU+memory-bound (~tens of ms) so it is offloaded via
         ``asyncio.to_thread`` — never run inline in the event loop (HIGH-11,
         proven not to block by T-TEST-11). :func:`~astropath.store.verify_password`
         wraps argon2's ``VerifyMismatchError`` (which is raised, not returned) into
-        a bool. T-M3-05 extends this to prefer the ``AdminCredential`` row and to
-        re-hash on outdated parameters.
+        a bool. On a successful verify with outdated parameters the hash is
+        re-computed and persisted to upgrade cost params (SPEC §6.3/§7.4).
         """
-        stored_hash = self._settings.admin_password_hash.get_secret_value()
-        return await asyncio.to_thread(verify_password, stored_hash, password)
+        if self._database is None:
+            stored = self._settings.admin_password_hash.get_secret_value()
+            return await asyncio.to_thread(verify_password, stored, password)
+
+        async with self._database.session() as session:
+            stored, _from_row = await self._stored_admin_hash(session)
+            if not await asyncio.to_thread(verify_password, stored, password):
+                return False
+            if await asyncio.to_thread(password_needs_rehash, stored):
+                upgraded = await asyncio.to_thread(hash_password, password)
+                await self._persist_admin_hash(session, upgraded)
+                await session.commit()
+            return True
+
+    async def set_admin_password(self, new_password: str) -> None:
+        """Persist a new admin password hash to ``AdminCredential`` (SPEC §6.3).
+
+        The DB row becomes the source of truth (login checks it first); the env
+        seed remains only as the first-boot fallback until this runs. argon2
+        hashing is offloaded (HIGH-11).
+        """
+        if self._database is None:
+            raise RuntimeError("cannot persist admin password without a database")
+        new_hash = await asyncio.to_thread(hash_password, new_password)
+        async with self._database.session() as session:
+            await self._persist_admin_hash(session, new_hash)
+            await session.commit()
+
+    async def _persist_admin_hash(self, session: AsyncSession, new_hash: str) -> None:
+        """Upsert the singleton ``AdminCredential`` row (id=1) with ``new_hash``."""
+        row = await session.get(AdminCredential, 1)
+        if row is None:
+            session.add(AdminCredential(id=1, password_hash=new_hash))
+        else:
+            row.password_hash = new_hash
 
 
 def get_auth(request: Request) -> AuthService:

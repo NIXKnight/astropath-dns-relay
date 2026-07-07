@@ -26,14 +26,16 @@ in this repository (SPEC secret discipline).
 from __future__ import annotations
 
 import base64
-from collections.abc import Callable
+from collections.abc import AsyncIterator, Callable, Iterator
 
 import dns.name
 import dns.tsig
 import dns.update
 import pytest
+import pytest_asyncio
 
 from astropath.data_plane.tsig import TsigKeySpec, build_keyring
+from astropath.db import Database
 from astropath.observability import DataPlaneMetrics
 
 # Reusable throwaway TSIG identity.
@@ -108,3 +110,65 @@ def make_unsigned_update() -> UpdateBuilder:
         return u.to_wire()
 
     return _make
+
+
+# --------------------------------------------------------------------------- #
+# Shared ephemeral Postgres for the management-API integration suites (T-M3-*).
+# Docker-gated: skips cleanly when Docker/testcontainers is unavailable, matching
+# the store integration suite. No SQLite — SPEC §12.3 requires dialect fidelity.
+# --------------------------------------------------------------------------- #
+_API_TABLES = (
+    "challengeevent",
+    "domain",
+    "tsigkey",
+    "apitoken",
+    "backend",
+    "admincredential",
+)
+
+
+@pytest.fixture(scope="session")
+def pg_dsn() -> Iterator[str]:
+    """Start an ephemeral Postgres; yield its asyncpg DSN (skip without Docker)."""
+    try:
+        from testcontainers.postgres import (  # type: ignore[import-untyped]
+            PostgresContainer,
+        )
+    except ImportError:  # pragma: no cover
+        pytest.skip("testcontainers not installed")
+
+    try:
+        container = PostgresContainer("postgres:16-alpine", driver="asyncpg")
+        container.start()
+    except Exception as exc:  # pragma: no cover - environment dependent
+        pytest.skip(f"Docker/Postgres unavailable: {exc}")
+
+    try:
+        yield container.get_connection_url(driver="asyncpg")
+    finally:
+        container.stop()
+
+
+@pytest.fixture(scope="session")
+def pg_migrated(pg_dsn: str) -> str:
+    """Apply ``alembic upgrade head`` once against the shared container."""
+    from astropath.migrate_bootstrap import apply_migrations
+
+    apply_migrations(pg_dsn)
+    return pg_dsn
+
+
+@pytest_asyncio.fixture
+async def api_db(pg_migrated: str) -> AsyncIterator[Database]:
+    """A clean :class:`Database` per test (all API tables truncated)."""
+    from sqlalchemy import text
+
+    database = Database.from_dsn(pg_migrated)
+    async with database.engine.begin() as conn:
+        await conn.execute(
+            text(f"TRUNCATE {', '.join(_API_TABLES)} RESTART IDENTITY CASCADE")
+        )
+    try:
+        yield database
+    finally:
+        await database.dispose()

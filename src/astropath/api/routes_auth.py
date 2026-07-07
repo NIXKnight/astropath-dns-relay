@@ -43,6 +43,13 @@ class LoginRequest(BaseModel):
     password: str = Field(min_length=1, repr=False)
 
 
+class PasswordChangeRequest(BaseModel):
+    """Admin password change body (SPEC §6.3). Both fields are write-only."""
+
+    current_password: str = Field(min_length=1, repr=False)
+    new_password: str = Field(min_length=8, repr=False)
+
+
 @router.get(
     "/session",
     summary="Whether the caller is authenticated",
@@ -80,3 +87,28 @@ async def logout(request: Request) -> dict[str, bool]:
     """Drop the session marker (SPEC §9.1). Idempotent."""
     clear_session(request)
     return {"authenticated": False}
+
+
+@router.post(
+    "/password",
+    summary="Change the admin password",
+    dependencies=[Depends(require_admin)],
+)
+async def change_password(
+    payload: PasswordChangeRequest,
+    auth: AuthService = Depends(get_auth),
+) -> dict[str, bool]:
+    """Persist a new admin password to AdminCredential (SPEC §6.3, §9.1).
+
+    Requires an authenticated caller and re-verification of the current password
+    (defense against a hijacked session). Afterwards the DB row is the source of
+    truth; the env hash remains only the first-boot seed. Passwords never appear
+    in logs or error bodies.
+    """
+    if not await auth.verify_admin_password(payload.current_password):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="current password is incorrect",
+        )
+    await auth.set_admin_password(payload.new_password)
+    return {"changed": True}
