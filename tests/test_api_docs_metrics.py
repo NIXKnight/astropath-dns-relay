@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 #
-# AstropathDNSRelay — self-hosted ACME DNS-01 solver gateway.
+# astropath-dns-relay — self-hosted ACME DNS-01 solver gateway.
 # Copyright (C) 2026  Saad Ali
 #
 # This program is free software: you can redistribute it and/or modify
@@ -91,7 +91,7 @@ async def test_openapi_schema_accessible_with_auth(
     response = await authed_client.get("/openapi.json")
     assert response.status_code == 200
     schema = response.json()
-    assert schema["info"]["title"] == "AstropathDNSRelay"
+    assert schema["info"]["title"] == "astropath-dns-relay"
     assert "/api/v1/backends" in schema["paths"]
 
 

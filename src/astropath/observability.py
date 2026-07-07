@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 #
-# AstropathDNSRelay — self-hosted ACME DNS-01 solver gateway.
+# astropath-dns-relay — self-hosted ACME DNS-01 solver gateway.
 # Copyright (C) 2026  Saad Ali
 #
 # This program is free software: you can redistribute it and/or modify
@@ -31,7 +31,7 @@ composition (:func:`astropath.main.serve`) folds this into the FastAPI
 data plane writes to (T-M6-01). ``/healthz`` and per-plane ``/readyz``
 (SPEC §11.2) live on the management plane.
 
-**Single-process constraint (SPEC §11.1, T-M6-01).** AstropathDNSRelay runs one
+**Single-process constraint (SPEC §11.1, T-M6-01).** astropath-dns-relay runs one
 asyncio process per container, so the module-level metric families live on a
 single in-process :class:`~prometheus_client.CollectorRegistry`. The prometheus
 multiprocess collector (``PROMETHEUS_MULTIPROC_DIR``) is deliberately **not**

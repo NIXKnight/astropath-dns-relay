@@ -1,4 +1,4 @@
-# AstropathDNSRelay -- cert-manager ClusterIssuer (Let's Encrypt PRODUCTION).
+# astropath-dns-relay -- cert-manager ClusterIssuer (Let's Encrypt PRODUCTION).
 # Task: T-DEPLOY-04 (staging-first + prod). SPEC 14.6.
 #
 # Identical rfc2136 solver to clusterissuer-letsencrypt-staging.yaml (T-DEPLOY-01)

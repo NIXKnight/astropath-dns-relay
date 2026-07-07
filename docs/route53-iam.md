@@ -1,12 +1,12 @@
 <!--
 SPDX-License-Identifier: GPL-3.0-or-later
-AstropathDNSRelay — Copyright (C) 2026 Saad Ali
+astropath-dns-relay — Copyright (C) 2026 Saad Ali
 -->
 
 # Route 53 backend — least-privilege IAM policy (T-M5-03, SPEC §5.8)
 
 `route53-iam-policy.json` is the least-privilege policy for the AWS credentials
-AstropathDNSRelay uses for a Route 53 backend. The access key + secret are stored
+astropath-dns-relay uses for a Route 53 backend. The access key + secret are stored
 **encrypted** in `Backend.config_encrypted` (never in the environment / instance
 profile — SPEC §5.8); this policy is attached to the IAM user or role that owns
 those credentials.
@@ -65,7 +65,7 @@ from the pinned libraries:
 condition key that restricts a *list* to a single record name. A policy whose
 **write** is narrowed to `_acme-challenge`/TXT therefore still permits **zone-wide
 reads** of every record in the hosted zone. This is inherent to Route 53 IAM, not
-a defect in AstropathDNSRelay. If a hosted zone holds records more sensitive than
+a defect in astropath-dns-relay. If a hosted zone holds records more sensitive than
 its public DNS already reveals, isolate the ACME challenge names in a **dedicated
 hosted zone / delegated subzone** so the read surface is limited to challenge
 records only.

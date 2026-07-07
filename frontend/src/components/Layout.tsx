@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-// AstropathDNSRelay — self-hosted ACME DNS-01 solver gateway.
+// astropath-dns-relay — self-hosted ACME DNS-01 solver gateway.
 // Copyright (C) 2026  Saad Ali. Licensed under the GNU GPL v3 or later; see the
 // LICENSE file in the project root, or <https://www.gnu.org/licenses/>.
 
@@ -28,7 +28,7 @@ export function Layout(): React.JSX.Element {
     <div className="layout">
       <aside className="sidebar">
         <div className="brand">
-          <span className="brand-name">AstropathDNSRelay</span>
+          <span className="brand-name">astropath-dns-relay</span>
           <span className="brand-sub">DNS-01 solver gateway</span>
         </div>
         <nav className="nav">

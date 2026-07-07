@@ -1,7 +1,7 @@
 ---
 # group_vars/astropath_gateway/vars.example.yml
 #
-# EXAMPLE non-secret inputs for the gateway-host AstropathDNSRelay deploy. Copy
+# EXAMPLE non-secret inputs for the gateway-host astropath-dns-relay deploy. Copy
 # into the PRIVATE ops repo's group_vars (or host_vars) and set real values.
 # Secret values live ONLY in the ansible-vault'd vault.yml (see vault.example.yml);
 # this file holds NO secrets. Placeholder values use <angle-brackets>.

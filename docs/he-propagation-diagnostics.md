@@ -3,22 +3,22 @@
 > Task T-M6-08 · SPEC §5.7, §11.1, §11.4, §16 · remediation LOW-4
 
 This runbook answers one operational question: **when a wildcard certificate is
-stuck, is it AstropathDNSRelay's fault or not?** The gateway is a *write-path only*
+stuck, is it astropath-dns-relay's fault or not?** The gateway is a *write-path only*
 service — it pushes the `_acme-challenge` TXT value to the provider and stops
 there. Everything after the push (public DNS propagation, cert-manager's
 self-check, Let's Encrypt validation) queries the provider's real public
-nameservers, which AstropathDNSRelay never controls.
+nameservers, which astropath-dns-relay never controls.
 
 So there are two distinct failure classes, and they are diagnosed differently:
 
 | Class | Meaning | Owner |
 |---|---|---|
-| **Provider push failed** | The HE API rejected or errored the update | AstropathDNSRelay surfaces it |
+| **Provider push failed** | The HE API rejected or errored the update | astropath-dns-relay surfaces it |
 | **Public visibility lagging** | HE accepted the write but public resolvers do not serve it yet | HE / public DNS — outside the gateway |
 
 ## 1. Did the provider push succeed?
 
-The push is what AstropathDNSRelay can prove. Every challenge produces one
+The push is what astropath-dns-relay can prove. Every challenge produces one
 outcome, visible in both metrics and logs.
 
 ### Metrics (`/metrics`, LAN-only)
@@ -66,7 +66,7 @@ lifecycle — parse → dispatch → HE call → audit — with that one id.
 
 If the outcome is `ok` (and the audit row confirms it) but cert-manager's
 challenge stays `pending`, the gateway has done its job. The remaining latency is
-**HE + public-DNS propagation**, which AstropathDNSRelay cannot observe or
+**HE + public-DNS propagation**, which astropath-dns-relay cannot observe or
 accelerate. Expected behavior:
 
 - HE applies a dynamic-record update quickly at its own authoritative servers,

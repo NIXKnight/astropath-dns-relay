@@ -1,4 +1,4 @@
-# AstropathDNSRelay -- wildcard Certificate consumed by Traefik.
+# astropath-dns-relay -- wildcard Certificate consumed by Traefik.
 # Task: T-DEPLOY-06. SPEC 14.4, 14.8.
 #
 # NAMESPACE: the WORKLOAD / Traefik namespace (NOT cert-manager). cert-manager

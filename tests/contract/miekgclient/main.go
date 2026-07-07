@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
-// AstropathDNSRelay — self-hosted ACME DNS-01 solver gateway.
+// astropath-dns-relay — self-hosted ACME DNS-01 solver gateway.
 // Copyright (C) 2026  Saad Ali
 //
 // This program is free software: you can redistribute it and/or modify

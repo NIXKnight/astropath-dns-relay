@@ -1,7 +1,7 @@
-Third-Party Software Notices for AstropathDNSRelay
+Third-Party Software Notices for astropath-dns-relay
 ==================================================
 
-AstropathDNSRelay is licensed under GPL-3.0-or-later (see the LICENSE file).
+astropath-dns-relay is licensed under GPL-3.0-or-later (see the LICENSE file).
 
 This notice records the licenses of third-party components redistributed inside
 the built frontend JavaScript bundle (frontend/dist/, produced by `npm run build`

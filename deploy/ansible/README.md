@@ -5,7 +5,7 @@ gateway-host deployment; the **private ops repo instantiates it** with real
 inventory, ansible-vault secret values, TLS material, and its own role
 implementations. No real hostname, IP, port, or secret ever appears here.
 
-AstropathDNSRelay runs on a LAN gateway host as the `fw-astropath`
+astropath-dns-relay runs on a LAN gateway host as the `fw-astropath`
 docker-compose stack (SPEC §1.4, §15.4), fronted by host nginx (LAN TLS) and
 host nftables (source-restricted RFC2136 port). The Kubernetes / cert-manager
 side lives in `deploy/k8s/` (authored separately) -- cross-referenced below.

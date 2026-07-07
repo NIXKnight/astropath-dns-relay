@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
 # SPDX-License-Identifier: GPL-3.0-or-later
 #
-# AstropathDNSRelay — multi-stage production image (SPEC §15.2, T-M0-07, T-M6-07).
+# astropath-dns-relay — multi-stage production image (SPEC §15.2, T-M0-07, T-M6-07).
 #
 #   1. frontend  (node)   — build the Vite/React SPA to dist/
 #   2. builder   (uv)     — `uv sync --frozen` → /app/.venv    (deps only)
@@ -79,7 +79,7 @@ FROM python:3.12-slim-bookworm@sha256:8a7e7cc04fd3e2bd787f7f24e22d5d119aa590d429
 ARG VERSION=0.1.0
 ARG VCS_REF=unknown
 ARG BUILD_DATE=unknown
-LABEL org.opencontainers.image.title="AstropathDNSRelay" \
+LABEL org.opencontainers.image.title="astropath-dns-relay" \
       org.opencontainers.image.description="Self-hosted ACME DNS-01 solver gateway (RFC2136/TSIG front end for cert-manager)." \
       org.opencontainers.image.licenses="GPL-3.0-or-later" \
       org.opencontainers.image.source="https://github.com/NIXKnight/Astropath-DNS-Relay" \

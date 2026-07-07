@@ -2,7 +2,7 @@
 
 > Task T-M6-09 / T-M2-08 · SPEC §7 · remediation HIGH-6
 
-AstropathDNSRelay encrypts credentials at rest with a **key-encryption key (KEK)**
+astropath-dns-relay encrypts credentials at rest with a **key-encryption key (KEK)**
 — Fernet + `MultiFernet` (`src/astropath/crypto.py`). This is *direct* key
 encryption, deliberately **not** called "envelope" encryption (SPEC §7.2). Every
 reversibly-stored secret (provider config, the HE per-record dynamic key, TSIG

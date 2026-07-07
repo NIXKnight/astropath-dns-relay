@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# AstropathDNSRelay -- deploy manifest validation.
+# astropath-dns-relay -- deploy manifest validation.
 # Task: T-TEST-20 (cert-manager / k8s deploy artifact validation). SPEC 14.
 #
 # Two independent gates:

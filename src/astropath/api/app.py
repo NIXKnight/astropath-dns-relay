@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 #
-# AstropathDNSRelay — self-hosted ACME DNS-01 solver gateway.
+# astropath-dns-relay — self-hosted ACME DNS-01 solver gateway.
 # Copyright (C) 2026  Saad Ali
 #
 # This program is free software: you can redistribute it and/or modify
@@ -111,7 +111,7 @@ def create_app(
     # re-registered below behind require_admin (MED-6). /metrics, /healthz, /readyz
     # are added explicitly with their own auth posture.
     app = FastAPI(
-        title="AstropathDNSRelay",
+        title="astropath-dns-relay",
         version="0.1.0",
         summary="Self-hosted ACME DNS-01 solver gateway management API.",
         docs_url=None,

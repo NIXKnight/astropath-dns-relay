@@ -1,10 +1,10 @@
-# AstropathDNSRelay -- cert-manager bring-up runbook
+# astropath-dns-relay -- cert-manager bring-up runbook
 
 Task: T-DEPLOY-09 (HIGH-10, BLOCKER-3). Covers SPEC 14. This runbook takes an
 operator from a fresh cluster to a Let's Encrypt wildcard `*.<domain>` cert that
 Traefik serves, and gives a diagnostics tree for a stuck challenge.
 
-The AstropathDNSRelay service runs **outside** the cluster (a LAN gateway host,
+The astropath-dns-relay service runs **outside** the cluster (a LAN gateway host,
 Ansible-deployed -- T-DEPLOY-07/08). The cluster side is only cert-manager
 talking RFC2136/TSIG to that gateway. This runbook is the cluster half.
 

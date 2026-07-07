@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 #
-# AstropathDNSRelay — self-hosted ACME DNS-01 solver gateway.
+# astropath-dns-relay — self-hosted ACME DNS-01 solver gateway.
 # Copyright (C) 2026  Saad Ali
 #
 # This program is free software: you can redistribute it and/or modify
@@ -302,7 +302,7 @@ def _render_bootstrap_toml(
     port: int,
 ) -> str:
     lines = [
-        "# AstropathDNSRelay M1 bootstrap (SPEC §16). Secrets are KEK-encrypted;",
+        "# astropath-dns-relay M1 bootstrap (SPEC §16). Secrets are KEK-encrypted;",
         "# deliver ansible-vault'd. Never commit a real secret to git.",
         "",
         "[listener]",

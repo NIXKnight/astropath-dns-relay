@@ -1,4 +1,4 @@
-# AstropathDNSRelay -- cert-manager Helm values snippet.
+# astropath-dns-relay -- cert-manager Helm values snippet.
 # Task: T-DEPLOY-02 (BLOCKER-3: split-horizon self-check fix). SPEC 14.3, 14.4.
 #
 # NOT a Kubernetes manifest -- this is a Helm values fragment for the

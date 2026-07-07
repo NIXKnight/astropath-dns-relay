@@ -1,4 +1,4 @@
-# AstropathDNSRelay — LOCAL DEVELOPMENT compose (SPEC §15, T-M0-09).
+# astropath-dns-relay — LOCAL DEVELOPMENT compose (SPEC §15, T-M0-09).
 #
 # This file is a convenience for running the gateway + a throwaway Postgres on a
 # developer machine. It is NOT the deployment artifact: production is an Ansible

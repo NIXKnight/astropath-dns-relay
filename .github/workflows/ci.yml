@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 #
-# AstropathDNSRelay — Continuous Integration (M0 skeleton, TASKS T-M0-08).
+# astropath-dns-relay — Continuous Integration (M0 skeleton, TASKS T-M0-08).
 #
 # Scope: lean quality gates only — ruff (lint), black (format check),
 # mypy (strict), and pytest with a ≥90% coverage gate, all driven by uv

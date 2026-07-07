@@ -1,8 +1,8 @@
-# AstropathDNSRelay -- NetworkPolicy: cert-manager controller egress (EXAMPLE).
+# astropath-dns-relay -- NetworkPolicy: cert-manager controller egress (EXAMPLE).
 # Task: T-DEPLOY-05. SPEC 14.7.
 #
 # For clusters running DEFAULT-DENY egress. It allow-lists exactly what DNS-01
-# issuance against the AstropathDNSRelay gateway needs. If your cluster does NOT
+# issuance against the astropath-dns-relay gateway needs. If your cluster does NOT
 # default-deny egress, this policy is optional -- a NetworkPolicy only restricts
 # pods it selects.
 #
@@ -65,7 +65,7 @@ spec:
           port: 53
         - protocol: TCP
           port: 53
-    # 2. AstropathDNSRelay gateway -- the RFC2136 signed UPDATE (UDP + TCP).
+    # 2. astropath-dns-relay gateway -- the RFC2136 signed UPDATE (UDP + TCP).
     - to:
         - ipBlock:
             cidr: <gateway-ip>/32

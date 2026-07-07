@@ -1,9 +1,9 @@
-# AstropathDNSRelay
+# astropath-dns-relay
 
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](./LICENSE)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/)
 
-**A self-hosted, multi-backend ACME DNS-01 solver gateway.** AstropathDNSRelay
+**A self-hosted, multi-backend ACME DNS-01 solver gateway.** astropath-dns-relay
 presents an RFC2136 (DNS UPDATE) + TSIG front end that cert-manager's built-in
 `rfc2136` DNS-01 solver talks to natively, and translates each DNS-01 challenge
 into an API call against a pluggable DNS **provider backend** (Hurricane Electric
@@ -20,7 +20,7 @@ the gateway holds the provider credential and exposes only the narrow
 - **Write-path only.** The gateway never serves authoritative DNS to the internet
   and is never publicly reachable. cert-manager's propagation self-check and Let's
   Encrypt's validation both query the *provider's* real public nameservers, which
-  already serve the pushed record. AstropathDNSRelay only makes outbound API calls.
+  already serve the pushed record. astropath-dns-relay only makes outbound API calls.
 - **A valid TSIG is not a zone-write credential.** After TSIG verification, a hard
   allowlist accepts only ADD/DELETE of a TXT rrset named exactly
   `_acme-challenge.<managed-zone>` — anything else is REFUSED.
@@ -196,7 +196,7 @@ uv run pytest              # tests (Postgres-backed suites use testcontainers)
 
 ## License
 
-AstropathDNSRelay is licensed under **GPL-3.0-or-later** (SPDX
+astropath-dns-relay is licensed under **GPL-3.0-or-later** (SPDX
 `GPL-3.0-or-later`). The full text is in [LICENSE](./LICENSE); every source file
 carries the short GPLv3 header (Copyright (C) 2026 Saad Ali). The `frontend/`
 inherits the same license; third-party licenses of the built SPA bundle are

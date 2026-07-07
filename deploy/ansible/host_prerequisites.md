@@ -7,7 +7,7 @@ is a placeholder; real hostnames/IPs/ports live only in the private repo.
 ## 1. RFC2136 listener port (UDP **and** TCP)
 
 The gateway already runs Pi-hole (`53`) and PowerDNS-auth (`5300`). The
-AstropathDNSRelay RFC2136 listener therefore uses a **non-53 port `<dns-port>`**,
+astropath-dns-relay RFC2136 listener therefore uses a **non-53 port `<dns-port>`**,
 set via `ASTROPATH_DNS_PORT` (overrides the image default) and consumed by the
 compose ports + the nftables template.
 

@@ -1,4 +1,4 @@
-# AstropathDNSRelay -- cert-manager ClusterIssuer (Let's Encrypt STAGING).
+# astropath-dns-relay -- cert-manager ClusterIssuer (Let's Encrypt STAGING).
 # Task: T-DEPLOY-01 (canonical rfc2136 solver shape). SPEC 14.1, 14.2, 14.6.
 #
 # This is the CANONICAL rfc2136 solver. The prod issuer
@@ -9,7 +9,7 @@
 #
 # Placeholders (substitute from the private ops repo; NEVER commit real values):
 #   <your-email>    ACME account contact address
-#   <gateway-ip>    AstropathDNSRelay gateway LAN IP -- an IP LITERAL, not a
+#   <gateway-ip>    astropath-dns-relay gateway LAN IP -- an IP LITERAL, not a
 #                   hostname, and not the public DNS provider (SPEC 14.2)
 #   <dns-port>      RFC2136 listener port on the gateway (SPEC 18.2: avoid 53 /
 #                   5300 which collide with Pi-hole / PowerDNS-auth)
@@ -41,7 +41,7 @@ spec:
             - "<domain>"
         dns01:
           rfc2136:
-            # IP literal of the AstropathDNSRelay gateway front end. cert-manager
+            # IP literal of the astropath-dns-relay gateway front end. cert-manager
             # sends the TSIG-signed DNS UPDATE here (SPEC 14.2).
             nameserver: "<gateway-ip>:<dns-port>"
             # Byte-exact match to the server TSIG key name, trailing dot included.

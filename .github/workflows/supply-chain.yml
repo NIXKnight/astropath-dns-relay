@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 #
-# AstropathDNSRelay — supply-chain & image hardening (SPEC §15.3, T-M6-06/T-M6-07).
+# astropath-dns-relay — supply-chain & image hardening (SPEC §15.3, T-M6-06/T-M6-07).
 #
 # Complements ci.yml (lint/format/type/test) with the security + packaging gates:
 #   - sast         : bandit static analysis of src/ (gates on medium+ findings)

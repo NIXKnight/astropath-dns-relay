@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 #
-# AstropathDNSRelay — self-hosted ACME DNS-01 solver gateway.
+# astropath-dns-relay — self-hosted ACME DNS-01 solver gateway.
 # Copyright (C) 2026  Saad Ali
 #
 # This program is free software: you can redistribute it and/or modify
@@ -16,7 +16,7 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-"""AstropathDNSRelay — self-hosted ACME DNS-01 solver gateway.
+"""astropath-dns-relay — self-hosted ACME DNS-01 solver gateway.
 
 Import root for the ``astropath`` package (SPEC §1.4). This initializer performs
 no heavy imports so that ``import astropath`` stays cheap and side-effect free;
