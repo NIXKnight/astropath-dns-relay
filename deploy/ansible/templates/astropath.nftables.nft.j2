@@ -1,0 +1,41 @@
+#!/usr/sbin/nft -f
+#
+# AstropathDNSRelay -- RFC2136 listener firewall fragment (SPEC §14.7, T-DEPLOY-08).
+#
+# EXAMPLE / TEMPLATE rendered by the PRIVATE ops repo's nftables / open-port role.
+# Opens the RFC2136 listener port on BOTH udp AND tcp (TSIG-signed UPDATEs exceed
+# 512B -> TCP fallback) and SOURCE-RESTRICTS it to the cluster nodes that reach the
+# gateway. `nft -c -f <rendered>` is the private repo's validation step (nft not
+# present in this public repo).
+#
+# Cilium masquerade caveat (SPEC §14.7) -- pick the correct source range:
+#   * default masquerade            : cert-manager egress SNATs to the NODE IPs
+#   * native routing / masq-disabled : the source is the POD CIDR
+# Populate astropath_acme_client_cidrs accordingly. Cross-ref the deploy/k8s/
+# egress / NetworkPolicy runbook (authored on the cluster side).
+#
+# Dedicated table: the `drop` verdict on the listener port makes this
+# deny-by-default for that port regardless of the host's base policy in other
+# tables (a drop in any chain is terminal for the packet).
+
+table inet astropath {
+
+    # Allowed RFC2136 clients. `flags interval` permits CIDR/range elements.
+    set acme_clients {
+        type ipv4_addr
+        flags interval
+        elements = { {{ astropath_acme_client_cidrs | join(', ') }} }
+    }
+
+    chain input {
+        type filter hook input priority filter; policy accept;
+
+        # Allow the signed UPDATE from cluster sources -- UDP and TCP both.
+        ip saddr @acme_clients udp dport {{ astropath_dns_port }} accept
+        ip saddr @acme_clients tcp dport {{ astropath_dns_port }} accept
+
+        # Deny everything else aimed at the listener port.
+        udp dport {{ astropath_dns_port }} drop
+        tcp dport {{ astropath_dns_port }} drop
+    }
+}
