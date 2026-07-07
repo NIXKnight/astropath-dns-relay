@@ -52,11 +52,11 @@ jobs:
       - name: Check out the repository
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
-      - name: Install uv and Python 3.11
+      - name: Install uv and Python 3.12
         uses: astral-sh/setup-uv@d31148d669074a8d0a63714ba94f3201e7020bc3 # v8.3.0
         with:
           version: "0.8.17"
-          python-version: "3.11"
+          python-version: "3.12"
           enable-cache: true
 
       - name: Install dependencies (frozen)
@@ -146,18 +146,71 @@ jobs:
           cache-to: type=gha,mode=max
 
       # T-M6-07 acceptance: non-root + working HEALTHCHECK + the container serving
-      # /healthz and / (SPA). Boot needs a valid KEK-encrypted bootstrap file, so
-      # one is minted in-image with a throwaway KEK (never printed). A high DNS
-      # port lets uid 10001 bind without NET_BIND_SERVICE; the DB DSN points
-      # nowhere on purpose — a lazy engine tolerates an unreachable database at
-      # boot (SPEC §6.4), so liveness still comes up.
+      # /healthz and / (SPA). Boot mints a valid KEK-encrypted bootstrap file
+      # in-image with a throwaway KEK (never printed); a high DNS port (5353, from
+      # the bootstrap) lets uid 10001 bind without NET_BIND_SERVICE.
+      #
+      # DB-mode boot fail-fasts (astropath.startup.validate_db_startup, T-M6-10):
+      # serve() eagerly pings the database AND requires the schema at the Alembic
+      # head before it binds readiness — an unreachable or unmigrated DB exits 2 and
+      # the HEALTHCHECK never turns healthy. So the smoke stands up a throwaway
+      # Postgres on a private bridge network and migrates it to head with the freshly
+      # built image itself (alembic.ini + alembic/ are baked in) before booting. The
+      # DB user/password/name below are ephemeral, CI-only, non-secret throwaways;
+      # nothing here consumes a repository secret. A private network (not host mode)
+      # keeps the app's 8080/5353 binds inside the container namespace — the baked
+      # HEALTHCHECK probes 127.0.0.1:8080 there — so only the existing 18080->8080
+      # probe map touches the runner host.
       - name: Verify runtime — non-root + HEALTHCHECK + boot smoke (T-M6-07)
         run: |
           set -euo pipefail
           IMAGE="$IMAGE_REF"
+          # Ephemeral, non-secret CI throwaways (obviously fake by design).
+          PGUSER=ci; PGPASS=ci; PGDB=astropath_ci
+          NET=astropath-smoke-net; PG=astropath-smoke-pg
+          DSN="postgresql+asyncpg://${PGUSER}:${PGPASS}@${PG}:5432/${PGDB}"
+
+          # Best-effort teardown of everything this step creates, even on a failed
+          # assertion, so nothing leaks into later steps.
+          cleanup() {
+            docker rm -f astropath-smoke "$PG" >/dev/null 2>&1 || true
+            docker network rm "$NET" >/dev/null 2>&1 || true
+            if [ -n "${WORK:-}" ]; then rm -rf "$WORK"; fi
+          }
+          trap cleanup EXIT
+
           test "$(docker inspect --format '{{.Config.User}}' "$IMAGE")" = "astropath"
           test "$(docker run --rm --entrypoint id "$IMAGE" -u)" = "10001"
           test "$(docker inspect --format '{{json .Config.Healthcheck}}' "$IMAGE")" != "null"
+
+          # Throwaway Postgres on a private bridge network; the smoke + migration
+          # containers reach it by container name via Docker's embedded DNS.
+          docker network rm "$NET" >/dev/null 2>&1 || true
+          docker network create "$NET" >/dev/null
+          docker run -d --name "$PG" --network "$NET" \
+            -e POSTGRES_USER="$PGUSER" -e POSTGRES_PASSWORD="$PGPASS" -e POSTGRES_DB="$PGDB" \
+            --health-cmd="pg_isready -U $PGUSER -d $PGDB" \
+            --health-interval=2s --health-timeout=3s --health-retries=20 \
+            postgres:16@sha256:fe03a7605299a34ddf5e4f285dff78c3d7190a576b3c6b46f2fcff69f4bffd54 >/dev/null  # postgres:16
+          pgstat=starting
+          for _ in $(seq 1 30); do
+            pgstat="$(docker inspect --format '{{.State.Health.Status}}' "$PG" 2>/dev/null || echo starting)"
+            [ "$pgstat" = "healthy" ] && break
+            sleep 2
+          done
+          echo "postgres health: $pgstat"
+          test "$pgstat" = "healthy"
+
+          # Migrate to head with the freshly built image (alembic/env.py reads
+          # ASTROPATH_DATABASE_DSN). Retry briefly to absorb the initdb TCP-readiness
+          # race right after the healthcheck flips green.
+          migrated=
+          for _ in $(seq 1 5); do
+            if docker run --rm --network "$NET" -e ASTROPATH_DATABASE_DSN="$DSN" \
+              --entrypoint python "$IMAGE" -m alembic upgrade head; then migrated=1; break; fi
+            sleep 3
+          done
+          test -n "$migrated"
 
           WORK="$(mktemp -d)"; chmod 777 "$WORK"
           docker run --rm --entrypoint python "$IMAGE" \
@@ -168,8 +221,8 @@ jobs:
             --output /out/astropath.bootstrap.toml --zone example.com. \
             --record-name _acme-challenge.example.com. --provider hurricane \
             --he-key ci-smoke-throwaway --host 0.0.0.0 --port 5353 >/dev/null 2>&1
-          docker run -d --name astropath-smoke \
-            -e ASTROPATH_DATABASE_DSN='postgresql+asyncpg://astropath:x@127.0.0.1:5432/astropath' \
+          docker run -d --name astropath-smoke --network "$NET" \
+            -e ASTROPATH_DATABASE_DSN="$DSN" \
             -e ASTROPATH_CREDENTIAL_KEK="$KEK" \
             -e ASTROPATH_ADMIN_PASSWORD_HASH='ci-smoke-placeholder-not-used-until-login' \
             -e ASTROPATH_SESSION_SECRET='ci-smoke-placeholder-session-secret' \
@@ -187,8 +240,6 @@ jobs:
           test "$st" = "healthy"
           test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:18080/healthz)" = "200"
           test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:18080/)" = "200"
-          docker rm -f astropath-smoke >/dev/null
-          rm -rf "$WORK"
 
       - name: Trivy image vulnerability scan (gates)
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
