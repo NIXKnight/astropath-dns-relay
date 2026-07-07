@@ -36,6 +36,7 @@ opaque session marker and hashes are handled here.
 
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime
 
 from fastapi import HTTPException, Request, Security, status
@@ -46,7 +47,7 @@ from astropath.api.session import SESSION_COOKIE, session_is_admin
 from astropath.db import Database
 from astropath.models import ApiToken
 from astropath.settings import Settings
-from astropath.store import hash_token
+from astropath.store import hash_token, verify_password
 
 __all__ = ["AuthService", "get_auth", "require_admin"]
 
@@ -88,6 +89,19 @@ class AuthService:
             row.last_used_at = datetime.now(UTC)
             await session.commit()
             return True
+
+    async def verify_admin_password(self, password: str) -> bool:
+        """Verify the admin password against the env-seeded hash (SPEC §7.4).
+
+        argon2 verify is CPU+memory-bound (~tens of ms) so it is offloaded via
+        ``asyncio.to_thread`` — never run inline in the event loop (HIGH-11,
+        proven not to block by T-TEST-11). :func:`~astropath.store.verify_password`
+        wraps argon2's ``VerifyMismatchError`` (which is raised, not returned) into
+        a bool. T-M3-05 extends this to prefer the ``AdminCredential`` row and to
+        re-hash on outdated parameters.
+        """
+        stored_hash = self._settings.admin_password_hash.get_secret_value()
+        return await asyncio.to_thread(verify_password, stored_hash, password)
 
 
 def get_auth(request: Request) -> AuthService:
