@@ -6,11 +6,13 @@
 # mypy (strict), and pytest with coverage, all driven by uv against the
 # committed uv.lock (`uv sync --frozen`) for reproducible installs.
 #
-# Deliberately OUT OF SCOPE here (owned by later milestones — do not add):
+# Deliberately OUT OF SCOPE here (owned elsewhere — do not add):
 #   - Postgres testcontainer + `alembic upgrade head`   (M2 / T-TEST-12)
 #   - coverage >90% enforcement                         (M6 / T-TEST-19)
-#   - vuln/license scan, SBOM, provenance, multi-arch    (M6 / T-M6-06)
-#   - image HEALTHCHECK / non-root verification          (M6 / T-M6-07)
+#   - vuln/license scan, SBOM, multi-arch, image verify (see supply-chain.yml, T-M6-06/07)
+#
+# All third-party actions are pinned by commit SHA (human tag in a trailing
+# comment); bump the SHA to take an action update.
 
 name: CI
 
@@ -40,10 +42,10 @@ jobs:
     timeout-minutes: 15
     steps:
       - name: Check out the repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
       - name: Install uv and Python 3.11
-        uses: astral-sh/setup-uv@v8
+        uses: astral-sh/setup-uv@d31148d669074a8d0a63714ba94f3201e7020bc3 # v8.3.0
         with:
           # Pin the uv tool for reproducible CI; bump alongside local upgrades.
           version: "0.8.17"

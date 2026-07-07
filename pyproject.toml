@@ -64,6 +64,9 @@ dev = [
     "black>=24.0",
     "mypy>=1.11",
     "testcontainers>=4.0",
+    # Python SAST scanner mandated by SPEC §15.3 / T-M6-06 ("bandit + a
+    # dependency scanner"). The [toml] extra lets it read [tool.bandit] below.
+    "bandit[toml]>=1.8",
 ]
 
 [tool.hatch.build.targets.wheel]
@@ -96,6 +99,19 @@ extend-immutable-calls = [
 [tool.black]
 line-length = 88
 target-version = ["py311"]
+
+[tool.bandit]
+# SAST scope: shipped application source only. Tests feed deliberately weak
+# inputs (fake secrets, forced-failure paths) and are never packaged, so
+# scanning them yields only noise. CI runs bandit at medium+ severity AND
+# medium+ confidence (see supply-chain.yml) to gate on actionable findings.
+exclude_dirs = ["tests", "frontend", ".venv"]
+# B104 (bind-all-interfaces): astropath is a containerised network daemon; the
+# 0.0.0.0 listener defaults are intentional — exposure is constrained by the
+# container network, nftables, and Kubernetes NetworkPolicy, not by the bind
+# address (SPEC §14.7). Suppressed here (config, tooling-owned) rather than with
+# per-line `# nosec` so src/ stays owned by the application authors.
+skips = ["B104"]
 
 [tool.mypy]
 python_version = "3.11"
