@@ -126,11 +126,31 @@ def validate_and_load(
 
 
 def _alembic_head(alembic_ini: str) -> str | None:
-    """The head revision id per the Alembic scripts (not a secret)."""
+    """The head revision id per the Alembic scripts (not a secret).
+
+    Resolving the script directory needs ``alembic.ini`` plus the ``alembic/``
+    migrations tree at that ini's location; the runtime image bakes both in
+    (Dockerfile). When either is absent — or ``script_location`` otherwise fails
+    to resolve — Alembic raises :class:`~alembic.util.exc.CommandError` ("No
+    'script_location' key found in configuration" for a missing/empty ini, "Path
+    doesn't exist" for a missing scripts dir); every config-missing mode surfaces
+    as that one type. ``CommandError`` is not a :class:`StartupError`, so ``main()``
+    would let it escape as an uncaught traceback (exit 1, crash-loop) instead of a
+    clean fail-fast. Re-raise it as :class:`StartupError` — which ``main()`` maps
+    to exit 2 — with a secret-free, actionable message (the wrapped text names only
+    a config key / filesystem path, never a DSN or secret).
+    """
     from alembic.config import Config
     from alembic.script import ScriptDirectory
+    from alembic.util.exc import CommandError
 
-    return ScriptDirectory.from_config(Config(alembic_ini)).get_current_head()
+    try:
+        return ScriptDirectory.from_config(Config(alembic_ini)).get_current_head()
+    except CommandError as exc:
+        raise StartupError(
+            f"alembic migrations are not resolvable from {alembic_ini!r} ({exc}); "
+            "the runtime image must ship alembic.ini and the alembic/ directory"
+        ) from exc
 
 
 async def _db_current_revision(engine: AsyncEngine) -> str | None:

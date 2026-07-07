@@ -31,7 +31,7 @@ from tests.test_api_app import make_settings
 from astropath import startup as startup_module
 from astropath.db import Database
 from astropath.models import Backend, TsigKey
-from astropath.startup import StartupError, validate_db_startup
+from astropath.startup import StartupError, _alembic_head, validate_db_startup
 
 # A DSN whose port has no listener — connection is refused fast (no Docker).
 _DEAD_DSN = "postgresql+asyncpg://u:PLACEHOLDER_PW@127.0.0.1:1/db"
@@ -68,6 +68,21 @@ async def test_unreachable_database_fails_fast() -> None:
     message = str(excinfo.value)
     assert "unreachable" in message
     assert "PLACEHOLDER_PW" not in message  # the DSN/password never leaks
+
+
+def test_missing_alembic_config_wraps_as_startup_error() -> None:
+    # A path with no alembic.ini → Alembic raises CommandError ("No
+    # 'script_location' key found") rather than StartupError; main() does not map
+    # CommandError to a clean exit, so an unwrapped one crash-loops the container
+    # (the exact defect the shipped image hit before alembic.ini/ was baked in).
+    # The wrap must turn it into a StartupError with an actionable, secret-free
+    # message. Reads config only — no database needed, so this runs Docker-free.
+    with pytest.raises(StartupError) as excinfo:
+        _alembic_head("/no/such/dir/alembic.ini")
+    message = str(excinfo.value)
+    assert "alembic.ini" in message  # names the artifact the image must ship
+    assert "/no/such/dir/alembic.ini" in message  # names the offending path
+    assert "Traceback" not in message  # a wrapped fail-fast, not a leaked stack
 
 
 # --------------------------------------------------------------------------- #
@@ -109,3 +124,16 @@ async def test_stale_schema_fails_fast(
     monkeypatch.setattr(startup_module, "_db_current_revision", _no_revision)
     with pytest.raises(StartupError, match="not current"):
         await validate_db_startup(api_db, make_settings())
+
+
+async def test_bad_alembic_config_fails_fast_through_validate(
+    api_db: Database,
+) -> None:
+    # End-to-end: the DB is reachable and at head, but an unresolvable alembic_ini
+    # (step 3 of validate_db_startup) raises CommandError — it must surface as a
+    # StartupError, never an uncaught crash. Proves the wrap holds on the real
+    # validate_db_startup path, past the reachability ping.
+    with pytest.raises(StartupError, match="alembic"):
+        await validate_db_startup(
+            api_db, make_settings(), alembic_ini="/no/such/dir/alembic.ini"
+        )
