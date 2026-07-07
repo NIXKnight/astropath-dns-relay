@@ -104,12 +104,22 @@ ENV PATH="/app/.venv/bin:${PATH}" \
     PYTHONDONTWRITEBYTECODE=1 \
     ASTROPATH_SPA_DIR="/app/static"
 
-# Dependency virtualenv (built in the builder stage), the application source, and
-# the built SPA. The app serves the SPA from /app/static behind an explicit
-# catch-all (SPEC §9.3, T-M4-04); ASTROPATH_SPA_DIR points the app at it so a
-# deep link resolves to index.html while /api and ops routes stay authoritative.
+# Dependency virtualenv (built in the builder stage), the application source, the
+# Alembic config + migrations, and the built SPA. The app serves the SPA from
+# /app/static behind an explicit catch-all (SPEC §9.3, T-M4-04); ASTROPATH_SPA_DIR
+# points the app at it so a deep link resolves to index.html while /api and ops
+# routes stay authoritative.
+#
+# alembic.ini + alembic/ MUST ship in the image: DB-mode startup validation
+# (astropath.startup.validate_db_startup -> _alembic_head) resolves the migration
+# head from them before binding readiness, and operators run `alembic upgrade head`
+# from /app (WORKDIR) — script_location is `%(here)s/alembic`, anchored to the ini.
+# Without them the boot aborts (SPEC §11.3, T-M6-10). Copied before the SPA so a
+# frontend-only change does not bust this layer.
 COPY --from=builder --chown=astropath:astropath /app/.venv ./.venv
 COPY --chown=astropath:astropath src/ ./src/
+COPY --chown=astropath:astropath alembic.ini ./alembic.ini
+COPY --chown=astropath:astropath alembic/ ./alembic/
 COPY --from=frontend --chown=astropath:astropath /frontend/dist ./static
 
 # Read-only root filesystem compatible: nothing is written to the image FS at
