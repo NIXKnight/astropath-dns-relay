@@ -36,6 +36,7 @@ from prometheus_client import CollectorRegistry
 
 from astropath.api import routes_auth
 from astropath.api.auth import AuthService
+from astropath.api.csrf import CsrfOriginMiddleware
 from astropath.api.deps import AppResources
 from astropath.api.ratelimit import LoginRateLimiter
 from astropath.api.session import add_session_middleware
@@ -92,6 +93,10 @@ def create_app(
 
     # Signed (not encrypted) session cookie carrying only an opaque admin marker.
     add_session_middleware(app, settings)
+    # CSRF origin check for cookie-authenticated mutating requests (added after the
+    # session middleware so it runs first — outermost — and rejects a forged
+    # cross-origin write before any handler work).
+    app.add_middleware(CsrfOriginMiddleware, allowed_origin=settings.management_origin)
 
     app.include_router(_meta_router())
     app.include_router(routes_auth.router)

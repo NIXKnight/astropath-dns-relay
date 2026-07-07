@@ -80,6 +80,12 @@ class Settings(BaseSettings):
     forwarded_allow_ips: str = "127.0.0.1"
     """nginx source IP/CIDR for uvicorn ``forwarded_allow_ips`` (SPEC §8.6)."""
 
+    management_origin: str | None = None
+    """Allowed browser origin (e.g. ``https://astropath.<domain>``) for the CSRF
+    origin check on cookie-authenticated mutating requests (SPEC §8.4). When unset,
+    the origin check is disabled (single-node dev); production sets it explicitly.
+    """
+
     dns_bind: str = "0.0.0.0"
     dns_port: int = 53
     http_bind: str = "0.0.0.0"
