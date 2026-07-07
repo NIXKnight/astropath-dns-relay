@@ -1,0 +1,51 @@
+# AstropathDNSRelay -- cert-manager ClusterIssuer (Let's Encrypt PRODUCTION).
+# Task: T-DEPLOY-04 (staging-first + prod). SPEC 14.6.
+#
+# Identical rfc2136 solver to clusterissuer-letsencrypt-staging.yaml (T-DEPLOY-01)
+# -- only the ACME `server` and the account-key Secret name differ. Apply this
+# issuer alongside staging, but do NOT point a Certificate at it until the SAME
+# name has issued cleanly against `letsencrypt-staging`.
+#
+# WHY staging-first: Let's Encrypt PRODUCTION rate-limits failed validations
+# (5 failures / account / hostname / hour) and duplicate certs (per SPEC 14.6;
+# confirm current limits at https://letsencrypt.org/docs/rate-limits/). A
+# misconfigured TSIG key, split-horizon self-check, or firewall gap will fail
+# repeatedly; discover that against staging's generous limits, then flip.
+#
+# FLIP PROCEDURE (RUNBOOK.md "Staging -> prod flip"): once the staging cert is
+# Ready, set the Certificate's `issuerRef.name` to `letsencrypt-prod` and delete
+# the old staging TLS Secret so cert-manager requests a fresh prod cert.
+#
+# Placeholders as in the staging issuer: <your-email>, <gateway-ip>, <dns-port>,
+# <tsig-key-name>, <domain>.
+---
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: letsencrypt-prod
+  labels:
+    app.kubernetes.io/part-of: astropath-dns-relay
+spec:
+  acme:
+    # Let's Encrypt PRODUCTION directory: trusted roots, strict rate limits.
+    server: https://acme-v02.api.letsencrypt.org/directory
+    email: <your-email>
+    privateKeySecretRef:
+      # Separate account key from staging (different ACME environment).
+      name: letsencrypt-prod-account-key
+    solvers:
+      - selector:
+          dnsZones:
+            - "<domain>"
+        dns01:
+          rfc2136:
+            nameserver: "<gateway-ip>:<dns-port>"
+            # Byte-exact match to the server TSIG key name, trailing dot included.
+            tsigKeyName: <tsig-key-name>
+            # PIN EXPLICITLY -- HMACMD5 default would silently fail (SPEC 14.1).
+            tsigAlgorithm: HMACSHA256
+            tsigSecretSecretRef:
+              # Same Secret, cluster-resource namespace (SPEC 14.4). The TSIG key
+              # is ACME-environment independent -- staging and prod share it.
+              name: tsig-secret
+              key: tsig-secret-key
