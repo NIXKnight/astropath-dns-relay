@@ -3,30 +3,29 @@
 #
 # AstropathDNSRelay — multi-stage production image (SPEC §15.2, T-M0-07).
 #
-#   1. frontend  (node)   — build the Vite/React SPA to dist/  (guarded until M4)
+#   1. frontend  (node)   — build the Vite/React SPA to dist/
 #   2. builder   (uv)     — `uv sync --frozen` → /app/.venv    (deps only)
 #   3. runtime   (python) — minimal, NON-ROOT, HEALTHCHECK → /healthz
 #
-# Entrypoint: `python -m astropath.main`. main.py is a stub until M1; no
-# application logic is baked in here.
+# Entrypoint: `python -m astropath.main`.
 
 # ---------------------------------------------------------------------------
-# Stage 1 — frontend: build the SPA bundle to /frontend/dist
+# Stage 1 — frontend: build the Vite/React/TS SPA to /frontend/dist
 # ---------------------------------------------------------------------------
-# TODO(T-M4-01): the Vite/React/TS SPA and its package-lock.json land at M4.
-# Until frontend/package.json exists this stage emits an EMPTY dist/ so
-# `docker build` succeeds today. When the SPA is scaffolded, restructure to
-# `COPY frontend/package*.json ./` + `npm ci` (cached deps layer) BEFORE
-# `COPY frontend/ .` + `npm run build`, for optimal layer caching.
-FROM node:22-alpine AS frontend
+# node:24-slim matches the toolchain the committed package-lock.json resolved
+# against (glibc), so `npm ci` installs the recorded native build binaries
+# (rolldown/oxc) deterministically. This stage is a throwaway builder — only
+# /frontend/dist (static HTML/JS/CSS) is copied into the runtime image, so the
+# builder base never reaches the shipped image.
+FROM node:24-slim AS frontend
 WORKDIR /frontend
+# Lockfile-first: the deps layer is cached until the pinned deps actually change,
+# so source-only edits skip `npm ci` on rebuild (SPEC §15.2).
+COPY frontend/package.json frontend/package-lock.json ./
+RUN npm ci
+# SPA sources + production build (`tsc -b && vite build`) → dist/ (index.html + assets/).
 COPY frontend/ ./
-RUN if [ -f package.json ]; then \
-        npm ci && npm run build; \
-    else \
-        mkdir -p dist && \
-        printf '<!doctype html><title>AstropathDNSRelay</title><!-- SPA builds at M4 (T-M4-01) -->\n' > dist/index.html; \
-    fi
+RUN npm run build
 
 # ---------------------------------------------------------------------------
 # Stage 2 — builder: resolve the frozen dependency set into /app/.venv
@@ -61,11 +60,13 @@ WORKDIR /app
 ENV PATH="/app/.venv/bin:${PATH}" \
     PYTHONPATH="/app/src" \
     PYTHONUNBUFFERED=1 \
-    PYTHONDONTWRITEBYTECODE=1
+    PYTHONDONTWRITEBYTECODE=1 \
+    ASTROPATH_SPA_DIR="/app/static"
 
 # Dependency virtualenv (built in the builder stage), the application source, and
-# the built SPA. SPEC §9.3 serves the SPA from ./static (StaticFiles + FileResponse);
-# TODO(T-M4-05): that mount/serving wiring is finalized at M4.
+# the built SPA. The app serves the SPA from /app/static behind an explicit
+# catch-all (SPEC §9.3, T-M4-04); ASTROPATH_SPA_DIR points the app at it so a
+# deep link resolves to index.html while /api and ops routes stay authoritative.
 COPY --from=builder --chown=astropath:astropath /app/.venv ./.venv
 COPY --chown=astropath:astropath src/ ./src/
 COPY --from=frontend --chown=astropath:astropath /frontend/dist ./static
