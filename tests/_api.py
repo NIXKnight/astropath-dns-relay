@@ -31,6 +31,9 @@ from contextlib import asynccontextmanager
 import httpx
 from fastapi import FastAPI
 
+from astropath.db import Database
+from astropath.store import build_api_token
+
 
 @asynccontextmanager
 async def api_client(app: FastAPI) -> AsyncIterator[httpx.AsyncClient]:
@@ -45,3 +48,17 @@ async def api_client(app: FastAPI) -> AsyncIterator[httpx.AsyncClient]:
 async def login(client: httpx.AsyncClient, password: str) -> httpx.Response:
     """POST the admin password to establish the session cookie."""
     return await client.post("/api/v1/auth/login", json={"password": password})
+
+
+async def seed_api_token(
+    database: Database, *, name: str = "test-token"
+) -> dict[str, str]:
+    """Insert an ApiToken row and return an ``X-API-Key`` header for CRUD auth.
+
+    Token auth is CSRF-exempt, so CRUD suites avoid the cookie/origin dance.
+    """
+    row, token = build_api_token(name=name)
+    async with database.session() as session:
+        session.add(row)
+        await session.commit()
+    return {"X-API-Key": token}

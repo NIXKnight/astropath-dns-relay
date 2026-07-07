@@ -18,8 +18,51 @@
 
 """Request/response schemas for the management API (SPEC §9.2).
 
-Pydantic models for the ``/api/v1`` surface. Secrets are write-only: accepted on
-create/update, never returned on read (redacted to ``***`` / ``<REDACTED>``).
-
-Implemented in T-M3-09 / T-M3-10.
+Secrets are **write-only**: accepted on create/update, **never** returned on read.
+Read models therefore omit every secret-bearing field entirely (a strictly safer
+form of "redacted") — provider config, HE per-record keys, TSIG secrets, and API
+tokens never appear in a list/get response. Generated secrets are returned exactly
+once, only in the dedicated create-response models (SPEC §9.2, §16).
 """
+
+from __future__ import annotations
+
+from datetime import datetime
+from typing import Any
+
+from pydantic import BaseModel, ConfigDict, Field
+
+__all__ = [
+    "BackendCreate",
+    "BackendRead",
+    "BackendUpdate",
+]
+
+
+class BackendCreate(BaseModel):
+    """Create a provider backend (shared config; SPEC §9.1)."""
+
+    name: str = Field(min_length=1, max_length=255)
+    type: str = Field(min_length=1, description="registry key, e.g. 'hurricane'")
+    config: dict[str, Any] = Field(
+        default_factory=dict, description="provider config per its config_schema()"
+    )
+
+
+class BackendUpdate(BaseModel):
+    """Patch a backend's name and/or config (re-encrypted on write)."""
+
+    name: str | None = Field(default=None, min_length=1, max_length=255)
+    config: dict[str, Any] | None = None
+
+
+class BackendRead(BaseModel):
+    """Backend view — config is write-only and never returned (SPEC §9.2)."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    name: str
+    type: str
+    created_at: datetime
+    updated_at: datetime
