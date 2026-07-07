@@ -35,6 +35,7 @@ from fastapi import APIRouter, FastAPI, Response
 from prometheus_client import CollectorRegistry
 
 from astropath.api.deps import AppResources
+from astropath.api.session import add_session_middleware
 from astropath.cache import RoutingCache
 from astropath.crypto import Kek
 from astropath.db import Database
@@ -83,6 +84,9 @@ def create_app(
         kek=kek,
         metrics_registry=metrics_registry,
     )
+
+    # Signed (not encrypted) session cookie carrying only an opaque admin marker.
+    add_session_middleware(app, settings)
 
     app.include_router(_meta_router())
 
