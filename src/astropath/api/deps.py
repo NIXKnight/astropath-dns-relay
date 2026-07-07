@@ -34,7 +34,7 @@ are exercised without standing up uvicorn.
 from __future__ import annotations
 
 import logging
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass
 from typing import Any
 
@@ -81,6 +81,11 @@ class AppResources:
     cache: RoutingCache | None = None
     kek: Kek | None = None
     metrics_registry: CollectorRegistry | None = None
+    #: Set by ``main()`` (T-M6-04): returns ``True`` only when the DNS plane is
+    #: fully ready — UDP+TCP sockets bound AND keyring loaded AND routing cache
+    #: populated (SPEC §11.2). ``None`` in pure-app tests, where ``/readyz`` falls
+    #: back to cache population alone.
+    dns_readiness: Callable[[], bool] | None = None
     #: Set by create_app once the auth plane lands (T-M3-02); an ``AuthService``.
     auth: Any = None
     #: Set by create_app once rate limiting lands (T-M3-07); a ``LoginRateLimiter``.

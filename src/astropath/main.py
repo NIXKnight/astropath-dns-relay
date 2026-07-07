@@ -333,12 +333,25 @@ async def serve(
             host=config.listener_host,
             port=config.listener_port,
         )
+        # Capture the non-optional instance so the readiness closure type-checks.
+        readiness_server = dns_server
+
+        def _dns_ready() -> bool:
+            # DNS readiness (SPEC §11.2, T-M6-04): both sockets bound AND the
+            # keyring loaded AND the routing cache populated.
+            return (
+                readiness_server.is_accepting
+                and bool(_keyring())
+                and cache.is_populated
+            )
+
         app = create_app(
             settings=settings,
             database=database,
             cache=cache,
             kek=kek,
             metrics_registry=registry,
+            dns_ready=_dns_ready,
         )
         api_server = build_management_server(app, settings)
         if install_signals:

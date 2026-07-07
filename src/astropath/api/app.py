@@ -32,6 +32,7 @@ probe endpoints, so M4 can append the static mount + catch-all without reorderin
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -96,6 +97,7 @@ def create_app(
     cache: RoutingCache | None = None,
     kek: Kek | None = None,
     metrics_registry: CollectorRegistry | None = None,
+    dns_ready: Callable[[], bool] | None = None,
     static_dir: str | Path | None = None,
 ) -> FastAPI:
     """Build the management-plane FastAPI app from ``main()``-owned resources.
@@ -122,6 +124,7 @@ def create_app(
         cache=cache,
         kek=kek,
         metrics_registry=metrics_registry,
+        dns_readiness=dns_ready,
         auth=AuthService(database, settings),
         rate_limiter=LoginRateLimiter(),
     )
@@ -184,13 +187,20 @@ def create_app(
     @app.get("/healthz", tags=["probes"], summary="Liveness (process up)")
     async def healthz() -> dict[str, str]:
         # Liveness only — the process is up and serving (SPEC §11.2). Per-plane
-        # readiness is /readyz; full per-plane detail lands in T-M6-04.
+        # readiness (sockets/keyring/cache/DB) is /readyz.
         return {"status": "ok"}
 
     @app.get("/readyz", tags=["probes"], summary="Per-plane readiness")
     async def readyz(response: Response) -> dict[str, object]:
+        # Per-plane truth (SPEC §11.2, T-M6-04): DNS is ready only when its
+        # UDP+TCP sockets are bound AND the keyring is loaded AND the routing
+        # cache is populated (the injected dns_readiness probe); the management
+        # plane is ready when the database answers. Overall ready needs both.
         resources: AppResources = app.state.astropath
-        dns_ready = resources.cache is not None and resources.cache.is_populated
+        if resources.dns_readiness is not None:
+            dns_ready = resources.dns_readiness()
+        else:  # pure-app fallback: cache population alone
+            dns_ready = resources.cache is not None and resources.cache.is_populated
         api_ready = False
         if resources.database is not None:
             try:

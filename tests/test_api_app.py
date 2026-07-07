@@ -116,3 +116,49 @@ async def test_probe_paths_do_not_require_auth(
     client: httpx.AsyncClient, path: str
 ) -> None:
     assert (await client.get(path)).status_code == 200
+
+
+# --------------------------------------------------------------------------- #
+# T-M6-04: per-plane readiness truth (DNS sockets/keyring/cache; API = DB up).
+# --------------------------------------------------------------------------- #
+class _FakeDB:
+    """A minimal stand-in exposing only the ping() /readyz calls."""
+
+    def __init__(self, *, reachable: bool) -> None:
+        self._reachable = reachable
+
+    async def ping(self) -> None:
+        if not self._reachable:
+            raise RuntimeError("database unreachable")
+
+
+async def _readyz(*, dns_ready: bool, db_reachable: bool) -> httpx.Response:
+    app = create_app(
+        settings=make_settings(),
+        database=_FakeDB(reachable=db_reachable),  # type: ignore[arg-type]
+        dns_ready=lambda: dns_ready,
+    )
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(
+        transport=transport, base_url="http://astropath.test"
+    ) as c:
+        return await c.get("/readyz")
+
+
+async def test_readyz_ready_only_when_both_planes_up() -> None:
+    response = await _readyz(dns_ready=True, db_reachable=True)
+    assert response.status_code == 200
+    assert response.json() == {"ready": True, "dns": True, "api": True}
+
+
+async def test_readyz_not_ready_when_dns_unbound_even_if_api_up() -> None:
+    # AC (SPEC §11.2): DNS socket unbound -> not ready even if the API plane is.
+    response = await _readyz(dns_ready=False, db_reachable=True)
+    assert response.status_code == 503
+    assert response.json() == {"ready": False, "dns": False, "api": True}
+
+
+async def test_readyz_not_ready_when_database_unreachable() -> None:
+    response = await _readyz(dns_ready=True, db_reachable=False)
+    assert response.status_code == 503
+    assert response.json() == {"ready": False, "dns": True, "api": False}
