@@ -35,7 +35,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select
 
 from astropath.api.auth import require_admin
-from astropath.api.deps import get_kek, get_session
+from astropath.api.deps import (
+    get_kek,
+    get_optional_cache,
+    get_session,
+    refresh_routing_cache,
+)
 from astropath.api.schemas import (
     ONE_TIME_SECRET_NOTICE,
     TsigKeyCreate,
@@ -43,6 +48,7 @@ from astropath.api.schemas import (
     TsigKeyRead,
 )
 from astropath.bootstrap import generate_tsig_secret
+from astropath.cache import RoutingCache
 from astropath.crypto import Kek
 from astropath.data_plane.tsig import UnknownAlgorithm, algorithm_from_text
 from astropath.models import TsigKey
@@ -67,6 +73,7 @@ async def create_tsig_key(
     payload: TsigKeyCreate,
     session: AsyncSession = Depends(get_session),
     kek: Kek = Depends(get_kek),
+    cache: RoutingCache | None = Depends(get_optional_cache),
 ) -> TsigKeyCreated:
     try:
         algorithm_from_text(payload.algorithm)
@@ -93,6 +100,8 @@ async def create_tsig_key(
             detail=f"TSIG key name {payload.name!r} already exists",
         ) from exc
     await session.refresh(row)
+    # New TSIG key must enter the data-plane keyring without a restart.
+    await refresh_routing_cache(cache)
     assert row.id is not None
     return TsigKeyCreated(
         id=row.id,
@@ -112,7 +121,9 @@ async def list_tsig_keys(
 
 @router.delete("/{tsig_key_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def revoke_tsig_key(
-    tsig_key_id: int, session: AsyncSession = Depends(get_session)
+    tsig_key_id: int,
+    session: AsyncSession = Depends(get_session),
+    cache: RoutingCache | None = Depends(get_optional_cache),
 ) -> None:
     row = await session.get(TsigKey, tsig_key_id)
     if row is None:
@@ -121,3 +132,4 @@ async def revoke_tsig_key(
         )
     await session.delete(row)
     await session.commit()
+    await refresh_routing_cache(cache)

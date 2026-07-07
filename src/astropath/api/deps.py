@@ -33,6 +33,7 @@ are exercised without standing up uvicorn.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from typing import Any
@@ -52,11 +53,15 @@ __all__ = [
     "get_cache",
     "get_database",
     "get_kek",
+    "get_optional_cache",
     "get_rate_limiter",
     "get_resources",
     "get_session",
     "get_settings_dep",
+    "refresh_routing_cache",
 ]
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -113,6 +118,36 @@ def get_cache(request: Request) -> RoutingCache:
     if cache is None:  # pragma: no cover - guarded by startup validation
         raise RuntimeError("routing cache is not configured for this app instance")
     return cache
+
+
+def get_optional_cache(request: Request) -> RoutingCache | None:
+    """Return the routing cache if this app instance has one, else ``None``.
+
+    Unlike :func:`get_cache` this never raises — the cache-refresh hook is a
+    best-effort convergence signal (MED-2, T-M3-16), and pure-app tests that run
+    without a cache must still exercise the CRUD write path.
+    """
+    return get_resources(request).cache
+
+
+async def refresh_routing_cache(cache: RoutingCache | None) -> None:
+    """Reload the in-memory routing cache after a routing/keyring write (T-M3-16).
+
+    Called *after* the write has committed, so the row is already durable and the
+    data plane's source of truth is correct regardless of what happens here. A
+    successful refresh makes the change visible to the DNS plane immediately, with
+    no restart (the AC). On failure the last-good snapshot is retained and the
+    periodic refresher (T-M2-05) reconverges, so the error is logged, not raised —
+    a transient DB hiccup during refresh must not fail an already-committed write.
+    """
+    if cache is None:
+        return
+    try:
+        await cache.refresh()
+    except Exception:  # pragma: no cover - defensive; periodic refresh reconverges
+        logger.warning(
+            "routing cache refresh after management-API write failed", exc_info=True
+        )
 
 
 def get_kek(request: Request) -> Kek:

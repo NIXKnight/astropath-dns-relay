@@ -35,8 +35,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select
 
 from astropath.api.auth import require_admin
-from astropath.api.deps import get_kek, get_session
+from astropath.api.deps import (
+    get_kek,
+    get_optional_cache,
+    get_session,
+    refresh_routing_cache,
+)
 from astropath.api.schemas import DomainCreate, DomainRead
+from astropath.cache import RoutingCache
 from astropath.crypto import Kek
 from astropath.models import Backend, Domain
 from astropath.store import SecretCodec, build_domain
@@ -68,6 +74,7 @@ async def create_domain(
     payload: DomainCreate,
     session: AsyncSession = Depends(get_session),
     kek: Kek = Depends(get_kek),
+    cache: RoutingCache | None = Depends(get_optional_cache),
 ) -> DomainRead:
     if await session.get(Backend, payload.backend_id) is None:
         raise HTTPException(
@@ -91,6 +98,8 @@ async def create_domain(
             detail=f"zone {payload.zone!r} is already mapped",
         ) from exc
     await session.refresh(domain)
+    # zone -> backend routing changed; make it visible to the DNS plane now.
+    await refresh_routing_cache(cache)
     return _to_read(domain)
 
 
@@ -104,7 +113,9 @@ async def list_domains(
 
 @router.delete("/{domain_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_domain(
-    domain_id: int, session: AsyncSession = Depends(get_session)
+    domain_id: int,
+    session: AsyncSession = Depends(get_session),
+    cache: RoutingCache | None = Depends(get_optional_cache),
 ) -> None:
     domain = await session.get(Domain, domain_id)
     if domain is None:
@@ -113,3 +124,4 @@ async def delete_domain(
         )
     await session.delete(domain)
     await session.commit()
+    await refresh_routing_cache(cache)

@@ -40,8 +40,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select
 
 from astropath.api.auth import require_admin
-from astropath.api.deps import get_kek, get_session
+from astropath.api.deps import (
+    get_kek,
+    get_optional_cache,
+    get_session,
+    refresh_routing_cache,
+)
 from astropath.api.schemas import BackendCreate, BackendRead, BackendUpdate
+from astropath.cache import RoutingCache
 from astropath.crypto import Kek
 from astropath.models import Backend, Domain
 from astropath.providers.base import UnknownProvider, get_provider
@@ -98,6 +104,7 @@ async def create_backend(
     payload: BackendCreate,
     session: AsyncSession = Depends(get_session),
     kek: Kek = Depends(get_kek),
+    cache: RoutingCache | None = Depends(get_optional_cache),
 ) -> Backend:
     config = _validated_config(payload.type, payload.config)
     backend = build_backend(
@@ -113,6 +120,7 @@ async def create_backend(
             detail=f"backend name {payload.name!r} already exists",
         ) from exc
     await session.refresh(backend)
+    await refresh_routing_cache(cache)
     return backend
 
 
@@ -136,6 +144,7 @@ async def update_backend(
     payload: BackendUpdate,
     session: AsyncSession = Depends(get_session),
     kek: Kek = Depends(get_kek),
+    cache: RoutingCache | None = Depends(get_optional_cache),
 ) -> Backend:
     backend = await _get_or_404(session, backend_id)
     if payload.name is not None:
@@ -153,12 +162,15 @@ async def update_backend(
             detail="backend name already exists",
         ) from exc
     await session.refresh(backend)
+    await refresh_routing_cache(cache)
     return backend
 
 
 @router.delete("/{backend_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_backend(
-    backend_id: int, session: AsyncSession = Depends(get_session)
+    backend_id: int,
+    session: AsyncSession = Depends(get_session),
+    cache: RoutingCache | None = Depends(get_optional_cache),
 ) -> None:
     backend = await _get_or_404(session, backend_id)
     referenced = (
@@ -173,3 +185,4 @@ async def delete_backend(
         )
     await session.delete(backend)
     await session.commit()
+    await refresh_routing_cache(cache)
