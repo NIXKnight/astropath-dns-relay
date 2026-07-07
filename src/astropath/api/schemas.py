@@ -50,6 +50,8 @@ __all__ = [
     "BackendCreate",
     "BackendRead",
     "BackendUpdate",
+    "ChallengeEventPage",
+    "ChallengeEventRead",
     "DomainCreate",
     "DomainRead",
     "TsigKeyCreate",
@@ -141,6 +143,38 @@ class DomainRead(BaseModel):
     record_name: str
     created_at: datetime
     has_secret: bool
+
+
+class ChallengeEventRead(BaseModel):
+    """One append-only audit row (SPEC §6.1, HIGH-8) — carries no secrets.
+
+    Every field is non-sensitive by construction: the dispatcher writes only the
+    zone, record handle, action, provider, result, latency, the authorizing TSIG
+    key **id** (never its secret), the source IP, and an optional redacted error.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    ts: datetime
+    zone: str
+    record_name: str
+    action: str
+    provider: str
+    result: str
+    latency_ms: int
+    tsig_key_id: int | None
+    source: str
+    error_detail: str | None
+
+
+class ChallengeEventPage(BaseModel):
+    """A page of audit rows plus the total, so the UI can render page controls."""
+
+    items: list[ChallengeEventRead]
+    total: int
+    limit: int
+    offset: int
 
 
 class TsigKeyCreate(BaseModel):

@@ -38,6 +38,7 @@ from astropath.api import (
     routes_auth,
     routes_backends,
     routes_domains,
+    routes_events,
     routes_tokens,
     routes_tsig,
 )
@@ -110,6 +111,7 @@ def create_app(
     app.include_router(routes_domains.router)
     app.include_router(routes_tsig.router)
     app.include_router(routes_tokens.router)
+    app.include_router(routes_events.router)
 
     @app.get("/healthz", tags=["probes"], summary="Liveness (process up)")
     async def healthz() -> dict[str, str]:
