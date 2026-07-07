@@ -42,7 +42,7 @@ import contextlib
 import logging
 import struct
 from collections.abc import Callable
-from typing import Any
+from typing import Any, cast
 
 import dns.name
 import dns.tsig
@@ -94,8 +94,15 @@ class _UdpProtocol(asyncio.DatagramProtocol):
         return self._tasks
 
     def connection_made(self, transport: asyncio.BaseTransport) -> None:
-        assert isinstance(transport, asyncio.DatagramTransport)
-        self._transport = transport
+        # ``create_datagram_endpoint`` always hands us a datagram transport, but
+        # narrow by type only — never with a runtime ``isinstance`` assert. On
+        # CPython < 3.12 the concrete ``_SelectorDatagramTransport`` does not list
+        # ``asyncio.DatagramTransport`` in its MRO (that base was added in 3.12),
+        # so an assert here raises inside this loop callback, is swallowed by the
+        # event loop, and leaves ``self._transport`` None — the UDP listener then
+        # silently never replies. ``cast`` keeps mypy-strict satisfied for the
+        # ``self._transport.sendto(...)`` call without a fragile runtime check.
+        self._transport = cast(asyncio.DatagramTransport, transport)
 
     def datagram_received(self, data: bytes, addr: tuple[str | Any, int]) -> None:
         # SYNC callback — MUST NOT await. Hand the packet off and return, so a

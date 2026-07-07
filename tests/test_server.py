@@ -39,7 +39,7 @@ import dns.update
 import pytest
 from prometheus_client import CollectorRegistry
 
-from astropath.data_plane.server import Rfc2136Server
+from astropath.data_plane.server import Rfc2136Server, _UdpProtocol
 from astropath.observability import DataPlaneMetrics
 
 Keyring = dict[dns.name.Name, dns.tsig.Key]
@@ -109,6 +109,27 @@ async def running_server(keyring: Keyring) -> AsyncIterator[Rfc2136Server]:
         task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await task
+
+
+def test_connection_made_stores_transport_without_isinstance_assert() -> None:
+    """``connection_made`` narrows by type only — never a runtime isinstance check.
+
+    On CPython < 3.12 the concrete ``_SelectorDatagramTransport`` is not an
+    ``asyncio.DatagramTransport`` subclass (that base arrived in 3.12), so a
+    runtime ``isinstance`` assert here would raise inside the loop callback, get
+    swallowed by the event loop, and leave ``_transport`` None — the UDP listener
+    would then silently never reply. Handing a plain ``BaseTransport`` stand-in
+    (which no interpreter treats as a ``DatagramTransport``) reproduces that shape
+    and guards the store-the-transport contract on every interpreter.
+    """
+    proto = _UdpProtocol(
+        lambda: {},
+        StubDispatcher(),
+        DataPlaneMetrics(registry=CollectorRegistry()),
+    )
+    transport = asyncio.BaseTransport()
+    proto.connection_made(transport)
+    assert proto._transport is transport
 
 
 async def test_udp_signed_update_round_trip(
