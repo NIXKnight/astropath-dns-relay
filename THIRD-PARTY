@@ -3,18 +3,52 @@ Third-Party Software Notices for AstropathDNSRelay
 
 AstropathDNSRelay is licensed under GPL-3.0-or-later (see the LICENSE file).
 
-This notice records the licenses of third-party components that are
-redistributed inside the built frontend JavaScript bundle (frontend/dist/,
-produced by `npm run build` and copied into the runtime image, per SPEC §1.5).
+This notice records the licenses of third-party components redistributed inside
+the built frontend JavaScript bundle (frontend/dist/, produced by `npm run build`
+and copied into the runtime image, per SPEC §1.5). Only *runtime* dependencies
+that end up in the shipped bundle are listed; build-only tooling (Vite,
+TypeScript, oxlint, lightningcss, @types/*, and their transitive build deps) is
+NOT redistributed and is therefore not listed here. Backend Python dependencies
+are declared in pyproject.toml / uv.lock and captured by the CI SBOM/license scan
+(TASKS T-M6-06), not duplicated here.
 
-STATUS: stub. Concrete per-dependency attributions are generated when the
-Vite/React/TypeScript SPA is scaffolded and built (TASKS T-M4-01 / T-M4-05).
+The bundled runtime closure (from frontend/package-lock.json; regenerate with
+`npm ls --omit=dev --all`) is six packages, all under the MIT license:
 
-Python runtime dependencies are declared in pyproject.toml and locked in
-uv.lock; their license metadata is captured there and by the CI SBOM/license
-scan step (TASKS T-M6-06) and is intentionally not duplicated here.
+    Package             Version   License
+    -----------------   -------   -------
+    react               19.2.7    MIT
+    react-dom           19.2.7    MIT
+    react-router        7.18.1    MIT
+    scheduler           0.27.0    MIT
+    cookie              1.1.1     MIT
+    set-cookie-parser   2.7.2     MIT
+
+Each package is Copyright (c) its respective authors and contributors
+(react / react-dom / scheduler: Copyright (c) Meta Platforms, Inc. and
+affiliates; react-router / cookie / set-cookie-parser: Copyright (c) Remix
+Software Inc. and contributors). Each is distributed under the MIT License, whose
+canonical text follows.
 
 --------------------------------------------------------------------------------
-Frontend bundle third-party notices:
-    (none yet — this section is populated by the frontend build in Track M4)
+MIT License
+--------------------------------------------------------------------------------
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
 --------------------------------------------------------------------------------
