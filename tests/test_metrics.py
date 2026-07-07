@@ -88,3 +88,42 @@ def test_metrics_are_scrapeable() -> None:
     scrape = generate_latest(reg).decode()
     assert "astropath_challenges_total" in scrape
     assert "astropath_provider_call_duration_seconds" in scrape
+
+
+def test_full_spec_11_1_metric_set_is_exposed() -> None:
+    # T-M6-01: every SPEC §11.1 metric family must be present on the single
+    # registry the /metrics mount serves — the names are frozen (M1/M3 pin them).
+    reg = CollectorRegistry()
+    metrics = DataPlaneMetrics(registry=reg)
+
+    # Touch every family so a value line is emitted (gauges/counters otherwise
+    # still emit their HELP/TYPE headers, which is what a scrape needs).
+    metrics.record_challenge(provider="hurricane", action="present", result="ok")
+    metrics.provider_call_duration.labels(provider="hurricane").observe(0.2)
+    metrics.record_tsig_failure("badtime")
+    metrics.mark_zone_success("example.com", 1_700_000_000.0)
+    metrics.record_plane_restart("dns")
+    metrics.set_plane_unhealthy("api", False)
+
+    scrape = generate_latest(reg).decode()
+    for family in (
+        "astropath_challenges_total",
+        "astropath_provider_call_duration_seconds",
+        "astropath_tsig_failures_total",
+        "astropath_tsig_badtime_total",
+        "astropath_zone_last_success_timestamp",
+        "astropath_plane_restarts_total",
+        "astropath_plane_unhealthy",
+    ):
+        assert family in scrape, f"missing SPEC §11.1 metric family: {family}"
+
+
+def test_provider_call_duration_uses_spec_buckets() -> None:
+    # SPEC §11.1: histogram buckets are [.1, .25, .5, 1, 2, 5, 10].
+    reg = CollectorRegistry()
+    metrics = DataPlaneMetrics(registry=reg)
+    metrics.provider_call_duration.labels(provider="hurricane").observe(0.3)
+
+    scrape = generate_latest(reg).decode()
+    for edge in ("0.1", "0.25", "0.5", "1.0", "2.0", "5.0", "10.0"):
+        assert f'le="{edge}"' in scrape, f"missing histogram bucket edge {edge}"

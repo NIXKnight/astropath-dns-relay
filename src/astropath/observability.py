@@ -25,9 +25,27 @@ global bleed (SPEC §11.1). Metric samples never carry secret material — only
 outcomes, reasons, and latencies.
 
 M1 exposes metrics via :func:`start_metrics_server`
-(``prometheus_client.start_http_server``) as an interim; this folds into a
-FastAPI ``/metrics`` mount at M6 (T-M6-01). ``/healthz`` and per-plane
-``/readyz`` (SPEC §11.2) also land with the management plane (M3+).
+(``prometheus_client.start_http_server``) as an interim; the two-plane
+composition (:func:`astropath.main.serve`) folds this into the FastAPI
+``/metrics`` mount, serving the very same :class:`DataPlaneMetrics` registry the
+data plane writes to (T-M6-01). ``/healthz`` and per-plane ``/readyz``
+(SPEC §11.2) live on the management plane.
+
+**Single-process constraint (SPEC §11.1, T-M6-01).** AstropathDNSRelay runs one
+asyncio process per container, so the module-level metric families live on a
+single in-process :class:`~prometheus_client.CollectorRegistry`. The prometheus
+multiprocess collector (``PROMETHEUS_MULTIPROC_DIR``) is deliberately **not**
+configured: it is required only when several worker processes must aggregate into
+one scrape. Should the gateway ever run multi-worker (multiple uvicorn workers),
+counters would otherwise reset per worker — at that point set
+``PROMETHEUS_MULTIPROC_DIR`` and switch to the multiprocess collector. The
+current supervisor model (SPEC §2.1) keeps everything in one process, so no
+multiprocess collector is needed.
+
+The full SPEC §11.1 metric set (challenges, provider-call duration, TSIG failures
+by reason, the dedicated BADTIME counter, per-zone last-success timestamp,
+per-plane restarts, and the per-plane unhealthy gauge) is defined below; the names
+are frozen (M1/M3 tests pin them) — extend, never rename.
 """
 
 from __future__ import annotations
