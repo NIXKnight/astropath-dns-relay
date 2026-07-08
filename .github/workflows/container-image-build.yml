@@ -1,0 +1,128 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# astropath-dns-relay — container image build & publish (Docker Hub).
+#
+# Builds the production image from the multi-stage Dockerfile and pushes it to
+# Docker Hub as nixknight/astropath-dns-relay on every push to main that touches
+# an image input. Modeled on the operator's Home-Ops pattern
+# (.github/workflows/openbao-unseal-container-image-build.yml): Docker Hub login
+# via the DOCKER_HUB_USERNAME / DOCKER_HUB_TOKEN secrets, kept verbatim so the
+# existing credential convention carries over unchanged.
+#
+# This repo's hardening is layered on top of that reference:
+#   * every third-party action pinned by commit SHA (human tag in a trailing
+#     comment); bump the SHA to take an update,
+#   * least-privilege permissions (contents: read — see below),
+#   * a concurrency guard that serialises publishes instead of cancelling them.
+#
+# Scope: build + publish only. Lint/format/type/test live in ci.yml; SAST, vuln
+# scans, the SBOM artifact, the runtime smoke, and multi-arch build-verification
+# live in supply-chain.yml — none of that is duplicated here.
+
+name: Build and Publish Image
+
+# Mirror the reference's trigger semantics: publish on push to main when an image
+# input changes. The reference watches one docker/ subtree + its own workflow
+# file; adapted here to this single-app repo's actual build inputs (the Dockerfile
+# and everything it COPYs, plus the dependency lockfiles and this workflow). No
+# workflow_dispatch / tag / schedule triggers — the reference has none. (ci.yml
+# and supply-chain.yml add workflow_dispatch; it is intentionally omitted here to
+# keep the reference's publish trigger verbatim — add it back if manual re-publish
+# is wanted.)
+on:
+  push:
+    branches: [main]
+    paths:
+      - "Dockerfile"
+      - ".dockerignore"
+      - "pyproject.toml"
+      - "uv.lock"
+      - "src/**"
+      - "alembic.ini"
+      - "alembic/**"
+      - "frontend/**"
+      - ".github/workflows/container-image-build.yml"
+
+# Least privilege: publishing to Docker Hub authenticates with registry-credential
+# secrets, not the GitHub token, so only checkout's read access is required. The
+# SLSA provenance + SBOM attestations are produced by BuildKit and pushed to the
+# registry alongside the image (not via GitHub OIDC), so no id-token / attestations
+# permission is needed.
+permissions:
+  contents: read
+
+# Do NOT cancel an in-flight publish. A superseded run may be mid-push, and
+# cancelling it can leave a partially pushed multi-arch manifest in the registry.
+# (ci.yml / supply-chain.yml use cancel-in-progress: true — correct for lint/test,
+# unsafe for a publish — so this workflow deliberately serialises per ref instead.)
+concurrency:
+  group: container-image-build-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  # Docker Hub image reference. The namespace matches the Dockerfile's
+  # org.opencontainers.image.source label (a public value), so it is hardcoded
+  # rather than secret; the reference derives its namespace from
+  # secrets.DOCKER_HUB_USERNAME, but the login step below still uses that secret
+  # verbatim for authentication.
+  IMAGE_NAME: nixknight/astropath-dns-relay
+  # Version tag + VERSION build-arg (drives org.opencontainers.image.version).
+  # Kept in step with pyproject [project].version and supply-chain.yml's build-arg;
+  # bump all three together on a release.
+  VERSION: "0.1.0"
+
+jobs:
+  build:
+    name: Build and push image
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # Re-declared per job to stay explicit (matches supply-chain.yml).
+    permissions:
+      contents: read
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Set up QEMU (arm64 emulation for the multi-arch leg)
+        uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8 # v4.2.0
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+
+      - name: Image build metadata
+        id: meta
+        run: |
+          echo "created=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+          echo "short_sha=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+        with:
+          username: ${{ secrets.DOCKER_HUB_USERNAME }}
+          password: ${{ secrets.DOCKER_HUB_TOKEN }}
+
+      # Multi-arch build + push. Platforms match this repo's shipped set (amd64 +
+      # arm64, already build-verified in supply-chain.yml) — a deviation from the
+      # reference, which builds single-arch amd64. Provenance (SLSA, mode=max) and
+      # an SBOM attestation are attached in the registry beside the image, per this
+      # repo's publish template at the tail of supply-chain.yml. The build-args feed
+      # the Dockerfile's org.opencontainers.image.{version,revision,created} LABELs,
+      # so no separate labels: input is needed — the Dockerfile already sets them.
+      - name: Build and push image (multi-arch)
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          provenance: mode=max
+          sbom: true
+          tags: |
+            ${{ env.IMAGE_NAME }}:latest
+            ${{ env.IMAGE_NAME }}:${{ env.VERSION }}
+            ${{ env.IMAGE_NAME }}:${{ steps.meta.outputs.short_sha }}
+          build-args: |
+            VERSION=${{ env.VERSION }}
+            VCS_REF=${{ github.sha }}
+            BUILD_DATE=${{ steps.meta.outputs.created }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
