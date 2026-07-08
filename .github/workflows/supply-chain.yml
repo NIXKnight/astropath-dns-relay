@@ -146,9 +146,11 @@ jobs:
           cache-to: type=gha,mode=max
 
       # T-M6-07 acceptance: non-root + working HEALTHCHECK + the container serving
-      # /healthz and / (SPA). Boot mints a valid KEK-encrypted bootstrap file
-      # in-image with a throwaway KEK (never printed); a high DNS port (5353, from
-      # the bootstrap) lets uid 10001 bind without NET_BIND_SERVICE.
+      # /healthz and / (SPA). This boots DB-ONLY — no bootstrap file: serve() takes
+      # its keyring/routing from the database (SPEC §16.4), so the smoke proves the
+      # bootstrap-file-less DB boot. Only a throwaway KEK is minted (never printed);
+      # a high DNS port (ASTROPATH_DNS_PORT=5353) lets uid 10001 bind without
+      # NET_BIND_SERVICE.
       #
       # DB-mode boot fail-fasts (astropath.startup.validate_db_startup, T-M6-10):
       # serve() eagerly pings the database AND requires the schema at the Alembic
@@ -175,7 +177,6 @@ jobs:
           cleanup() {
             docker rm -f astropath-smoke "$PG" >/dev/null 2>&1 || true
             docker network rm "$NET" >/dev/null 2>&1 || true
-            if [ -n "${WORK:-}" ]; then rm -rf "$WORK"; fi
           }
           trap cleanup EXIT
 
@@ -212,22 +213,18 @@ jobs:
           done
           test -n "$migrated"
 
-          WORK="$(mktemp -d)"; chmod 777 "$WORK"
-          docker run --rm --entrypoint python "$IMAGE" \
-            -m astropath.bootstrap gen-kek > "$WORK/kek" 2>/dev/null
-          KEK="$(cat "$WORK/kek")"
-          docker run --rm --entrypoint python -e ASTROPATH_CREDENTIAL_KEK="$KEK" \
-            -v "$WORK:/out" "$IMAGE" -m astropath.bootstrap init \
-            --output /out/astropath.bootstrap.toml --zone example.com. \
-            --record-name _acme-challenge.example.com. --provider hurricane \
-            --he-key ci-smoke-throwaway --host 0.0.0.0 --port 5353 >/dev/null 2>&1
+          # DB-only boot: no bootstrap file. Only a throwaway KEK is minted (it
+          # decrypts the DB secrets too); ASTROPATH_DNS_PORT=5353 keeps uid 10001
+          # off the privileged port 53 without NET_BIND_SERVICE.
+          KEK="$(docker run --rm --entrypoint python "$IMAGE" \
+            -m astropath.bootstrap gen-kek 2>/dev/null)"
           docker run -d --name astropath-smoke --network "$NET" \
             -e ASTROPATH_DATABASE_DSN="$DSN" \
             -e ASTROPATH_CREDENTIAL_KEK="$KEK" \
             -e ASTROPATH_ADMIN_PASSWORD_HASH='ci-smoke-placeholder-not-used-until-login' \
             -e ASTROPATH_SESSION_SECRET='ci-smoke-placeholder-session-secret' \
-            -e ASTROPATH_BOOTSTRAP_PATH=/cfg/astropath.bootstrap.toml \
-            -v "$WORK:/cfg:ro" -p 18080:8080 "$IMAGE" >/dev/null
+            -e ASTROPATH_DNS_PORT=5353 \
+            -p 18080:8080 "$IMAGE" >/dev/null
           st=starting
           for _ in $(seq 1 30); do
             st="$(docker inspect --format '{{.State.Health.Status}}' astropath-smoke 2>/dev/null || echo starting)"
