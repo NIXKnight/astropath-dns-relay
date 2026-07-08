@@ -88,6 +88,12 @@ request. Both bite from-scratch first boots and are easy to miss.
 
 ### 6.1 The bootstrap file must be readable by the container UID (`10001`)
 
+**File mode only.** This trap applies solely when deploying **with** a bootstrap
+file. In DB mode (`serve()` with `ASTROPATH_BOOTSTRAP_PATH` unset) there is no
+file to mount and the DB is the sole keyring/routing source (SPEC §10/§16), so
+this section does not apply — skip it and drop the file mount/env from the
+compose stack.
+
 The image runs non-root as a fixed `uid:gid` of **`10001:10001`** (SPEC §15.2),
 and the M1 bootstrap file is mounted read-only
 (`{{ astropath_bootstrap_host_path }}:/etc/astropath/astropath.bootstrap.toml:ro`).

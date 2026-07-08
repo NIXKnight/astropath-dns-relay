@@ -100,6 +100,8 @@ uv run python -m astropath.bootstrap secret-yaml \
 
 Point the service at the file with `ASTROPATH_BOOTSTRAP_PATH=astropath.bootstrap.toml`. A lost one-time secret is never redisplayed — **revoke and recreate**.
 
+> **DB mode (the two-plane `serve()` stack, M2+):** the bootstrap file is **optional**. Leave `ASTROPATH_BOOTSTRAP_PATH` unset and the DB-backed routing cache is the sole keyring/routing source — TSIG keys created in the panel converge live with no restart. A configured-but-missing file still fail-fasts, and the KEK is required either way. This CLI walkthrough is the file-mode (`run()`, no-DB) path.
+
 Once the store lands (M2+), migrate the file into Postgres and retire it:
 
 ```bash
@@ -116,7 +118,7 @@ Only bootstrap secrets live in the environment (SPEC §10.2); all arrive ansible
 | `ASTROPATH_CREDENTIAL_KEK` | Ordered Fernet keylist (primary first) — the KEK |
 | `ASTROPATH_ADMIN_PASSWORD_HASH` | argon2id hash seeding the admin credential |
 | `ASTROPATH_SESSION_SECRET` | Starlette session-cookie signing secret |
-| `ASTROPATH_BOOTSTRAP_PATH` | Path to the M1 bootstrap file |
+| `ASTROPATH_BOOTSTRAP_PATH` | Path to the file-mode bootstrap file — **optional in DB mode** (unset → the DB is the sole keyring/routing source) |
 | `ASTROPATH_FORWARDED_ALLOW_IPS` | nginx source IP/CIDR for uvicorn proxy headers |
 | `ASTROPATH_DNS_BIND` / `_DNS_PORT` | RFC2136 listener (UDP+TCP) |
 | `ASTROPATH_HTTP_BIND` / `_HTTP_PORT` | Management API / SPA |

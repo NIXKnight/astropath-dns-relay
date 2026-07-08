@@ -18,7 +18,7 @@ side lives in `deploy/k8s/` (authored separately) -- cross-referenced below.
 | `ansible-vault`-encrypted secret **values** for every `vault_astropath_*` name | private repo |
 | The `docker-compose-service`, `pgsql_dbs_users`, `nginx`, and `nftables` roles | private repo |
 | LAN wildcard TLS certificate + key | private repo |
-| The KEK-encrypted M1 bootstrap file (`astropath.bootstrap.toml`, SPEC §16) | private repo (vault-delivered) |
+| The KEK-encrypted bootstrap file (`astropath.bootstrap.toml`, SPEC §16) — **file mode only; optional in DB mode** (unset → DB is the source) | private repo (vault-delivered) |
 | Concrete published image tag | private repo (pins it) |
 
 ## What THIS tree provides
@@ -64,8 +64,9 @@ Before first deploy, satisfy `host_prerequisites.md`: host NTP/chrony (TSIG skew
 > 300s fudge -> 100% BADTIME), the non-53 RFC2136 port decision, the firewall
 source restriction (Cilium masquerade caveat), the `astropath.<domain>` DNS
 A-record, the host-Postgres listen/`pg_hba` reachability from the container
-subnet, the bootstrap file's readability by the container uid (`10001`), and the
-`$$`-escaping of the argon2 admin hash wherever it passes through Docker Compose.
+subnet, the bootstrap file's readability by the container uid (`10001`, file
+mode only — omit it in DB mode), and the `$$`-escaping of the argon2 admin hash
+wherever it passes through Docker Compose.
 
 ## References
 
