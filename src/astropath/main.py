@@ -285,15 +285,24 @@ async def serve(
 ) -> int:
     """Run both planes (data + management) until shutdown; return the exit code.
 
-    Supervisor A is the RFC2136 data plane (file-seeded keyring/routing, overlaid
-    live by the shared DB cache); supervisor B embeds the FastAPI app under
-    uvicorn. Both share one ``shutdown`` event. Returns ``0`` on a clean stop and
-    ``1`` when either plane exhausts its restart budget. Startup validation
-    failures raise :class:`~astropath.startup.StartupError` before resources are
-    allocated (preserving the ``main()`` return-2 contract).
+    Supervisor A is the RFC2136 data plane, overlaid live by the shared DB cache;
+    supervisor B embeds the FastAPI app under uvicorn. The bootstrap file is
+    OPTIONAL here (SPEC §10/§16): when set it seeds the keyring/routing (and the
+    listener bind/port) as in file mode; when unset the plane boots with an empty
+    seed and the DB cache is the sole source, binding ``ASTROPATH_DNS_BIND`` /
+    ``ASTROPATH_DNS_PORT``. Both planes share one ``shutdown`` event. Returns ``0``
+    on a clean stop and ``1`` when either plane exhausts its restart budget.
+    Startup validation failures (a malformed KEK, a configured-but-missing file,
+    an unreachable/stale DB) raise :class:`~astropath.startup.StartupError` before
+    resources are allocated (preserving the ``main()`` return-2 contract).
     """
+    # DB mode: the bootstrap file is OPTIONAL (SPEC §10/§16). No file → an empty
+    # keyring/routing seed; the DB-backed RoutingCache is the sole config source.
+    # A file, when set, still validates + seeds exactly as before.
     kek, config = validate_and_load(
-        settings.credential_kek.get_secret_value(), settings.bootstrap_path
+        settings.credential_kek.get_secret_value(),
+        settings.bootstrap_path,
+        require_bootstrap=False,
     )
     shutdown = shutdown if shutdown is not None else asyncio.Event()
 
@@ -318,6 +327,14 @@ async def serve(
         await validate_db_startup(database, settings)
         await _safe_initial_refresh(cache)
         runtime = build_data_plane(config, http_client=client)
+        # DNS listener bind/port: the bootstrap file's [listener] when a file seeds
+        # the plane (file mode, unchanged); otherwise the DB-mode env config
+        # (ASTROPATH_DNS_BIND / ASTROPATH_DNS_PORT, SPEC §10.2) — with no file the
+        # empty seed carries no [listener] to source them from.
+        if settings.bootstrap_path is None:
+            listener_host, listener_port = settings.dns_bind, settings.dns_port
+        else:
+            listener_host, listener_port = config.listener_host, config.listener_port
         routing = _CompositeRouting(cache, runtime.routing)
         dispatcher = Dispatcher(
             routing,
@@ -335,20 +352,19 @@ async def serve(
             _keyring,
             dispatcher,
             metrics,
-            host=config.listener_host,
-            port=config.listener_port,
+            host=listener_host,
+            port=listener_port,
         )
         # Capture the non-optional instance so the readiness closure type-checks.
         readiness_server = dns_server
 
         def _dns_ready() -> bool:
-            # DNS readiness (SPEC §11.2, T-M6-04): both sockets bound AND the
-            # keyring loaded AND the routing cache populated.
-            return (
-                readiness_server.is_accepting
-                and bool(_keyring())
-                and cache.is_populated
-            )
+            # DNS readiness (SPEC §11.2, T-M6-04): both sockets bound AND the DB
+            # routing snapshot loaded. In DB mode an empty-but-initialized keyring
+            # is "loaded" — zero configured keys is valid (unknown/unsigned UPDATEs
+            # answer NOTAUTH); the file seed, when present, is already folded into
+            # _keyring() at boot. cache.is_populated is the keyring+routing gate.
+            return readiness_server.is_accepting and cache.is_populated
 
         app = create_app(
             settings=settings,
@@ -381,7 +397,7 @@ async def serve(
         log.info(
             "both planes serving",
             extra={
-                "dns_host": config.listener_host,
+                "dns_host": listener_host,
                 "dns_port": dns_server.port,
                 "http_host": settings.http_bind,
                 "http_port": settings.http_port,

@@ -23,7 +23,9 @@ binds its readiness — a misconfigured relay must crash loudly at boot, never
 half-serve. The M1 subset validates:
 
 * the KEK keylist entries are valid 32-byte urlsafe-base64 Fernet keys,
-* the bootstrap file is present and decrypts under that KEK,
+* the bootstrap file (when configured) is present and decrypts under that KEK —
+  ``run()`` (file mode) requires it; ``serve()`` (DB mode) treats an unset path
+  as a valid empty seed (``require_bootstrap=False``), the DB being the source,
 * every configured provider type resolves in the provider ``REGISTRY``,
 * every configured TSIG algorithm maps to a dnspython algorithm.
 
@@ -67,15 +69,31 @@ class StartupError(RuntimeError):
 
 
 def validate_and_load(
-    kek_keylist: str | None, bootstrap_path: str | Path | None
+    kek_keylist: str | None,
+    bootstrap_path: str | Path | None,
+    *,
+    require_bootstrap: bool = True,
 ) -> tuple[Kek, BootstrapConfig]:
-    """Validate the M1 startup preconditions and return ``(kek, config)``.
+    """Validate the startup preconditions and return ``(kek, config)``.
 
-    Raises :class:`StartupError` on any failure — malformed KEK, missing or
-    undecryptable bootstrap file, an unknown provider type, or an unsupported
-    TSIG algorithm. On success the returned pair is ready for
-    :func:`astropath.bootstrap.build_data_plane`; nothing else needs to re-parse
-    or re-decrypt.
+    The KEK is always required (it also decrypts the DB-stored secrets).
+    ``require_bootstrap`` selects the bootstrap-file policy:
+
+    * :func:`astropath.main.run` (M1 file mode) passes the default ``True`` — an
+      unset ``bootstrap_path`` hard-fails, because the file is the only config
+      source.
+    * :func:`astropath.main.serve` (DB mode) passes ``False`` — an unset
+      ``bootstrap_path`` is a valid boot and yields an **empty**
+      :class:`BootstrapConfig` (an empty keyring/routing seed), leaving the
+      DB-backed :class:`~astropath.cache.RoutingCache` as the sole config source
+      (SPEC §10/§16). When a path *is* configured it is validated identically in
+      both modes.
+
+    Raises :class:`StartupError` on any failure — malformed KEK, a
+    configured-but-missing or undecryptable bootstrap file, an unknown provider
+    type, or an unsupported TSIG algorithm. On success the returned pair is ready
+    for :func:`astropath.bootstrap.build_data_plane`; nothing else needs to
+    re-parse or re-decrypt.
     """
     if not kek_keylist:
         raise StartupError(
@@ -88,9 +106,13 @@ def validate_and_load(
         raise StartupError(f"invalid credential KEK: {exc}") from exc
 
     if bootstrap_path is None:
-        raise StartupError(
-            "bootstrap path is not configured (set ASTROPATH_BOOTSTRAP_PATH)"
-        )
+        if require_bootstrap:
+            raise StartupError(
+                "bootstrap path is not configured (set ASTROPATH_BOOTSTRAP_PATH)"
+            )
+        # DB mode (serve()): no file is a valid boot. Seed an empty keyring/
+        # routing; the DB-backed RoutingCache is the sole config source (§10/§16).
+        return kek, BootstrapConfig()
     path = Path(bootstrap_path)
     if not path.is_file():
         raise StartupError(f"bootstrap file not found: {path}")

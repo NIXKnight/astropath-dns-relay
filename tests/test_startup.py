@@ -96,8 +96,53 @@ def test_missing_bootstrap_file_fails_fast(tmp_path: Path) -> None:
 
 
 def test_unconfigured_bootstrap_path_fails_fast() -> None:
+    # run()'s file mode (the default require_bootstrap=True): the file is the only
+    # config source, so an unset path hard-fails.
     with pytest.raises(StartupError, match="bootstrap path is not configured"):
         validate_and_load(generate_key(), None)
+
+
+def test_optional_bootstrap_unset_returns_empty_config() -> None:
+    # serve()'s DB mode (require_bootstrap=False): an unset path is a VALID boot.
+    # The KEK still validates and an EMPTY config (empty keyring/routing seed) is
+    # returned — the DB-backed RoutingCache is the sole config source (SPEC §10/§16).
+    kek_raw = generate_key()
+
+    kek, config = validate_and_load(kek_raw, None, require_bootstrap=False)
+
+    assert config.tsig_keys == []
+    assert config.zones == []
+    assert config.backends == []
+    assert kek.decrypt_str(Kek([kek_raw]).encrypt_str("ping")) == "ping"  # usable KEK
+
+
+def test_optional_bootstrap_still_loads_a_configured_file(tmp_path: Path) -> None:
+    # require_bootstrap=False does not SKIP a file that is configured: a present
+    # path is validated and seeded exactly as file mode does.
+    kek_raw = generate_key()
+    path = tmp_path / "astropath.bootstrap.toml"
+    _write_bootstrap(path, Kek([kek_raw]))
+
+    _kek, config = validate_and_load(kek_raw, path, require_bootstrap=False)
+
+    assert config.zones[0].provider == "hurricane"
+    assert config.tsig_keys[0].secret_b64 == _TSIG_SECRET  # decrypted under the KEK
+
+
+def test_optional_bootstrap_still_requires_the_kek() -> None:
+    # The KEK is required in BOTH modes (it decrypts DB secrets too), even when the
+    # bootstrap file is optional.
+    with pytest.raises(StartupError, match="credential KEK is not configured"):
+        validate_and_load("", None, require_bootstrap=False)
+
+
+def test_malformed_bootstrap_file_fails_fast(tmp_path: Path) -> None:
+    # A configured-but-malformed file fails fast with a secret-free message.
+    path = tmp_path / "astropath.bootstrap.toml"
+    path.write_text("this is = = not valid toml\n", encoding="utf-8")
+
+    with pytest.raises(StartupError, match="bootstrap file is invalid"):
+        validate_and_load(generate_key(), path)
 
 
 def test_unknown_provider_fails_fast(tmp_path: Path) -> None:
