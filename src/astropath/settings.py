@@ -89,11 +89,6 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
     log_format: str = "text"
 
-    metrics_port: int = 9090
-    """Prometheus exposition port (SPEC §11.1). The two-plane ``serve()`` stack
-    exposes ``/metrics`` on the HTTP plane; this value is retained for the
-    deployment env contract (``ASTROPATH_METRICS_PORT``)."""
-
     shutdown_drain_timeout: float = 10.0
     """Seconds to drain in-flight DNS dispatches on SIGTERM before force-closing
     sockets (SPEC §2/§3, T-M6-05). Kept below a typical orchestrator grace period
