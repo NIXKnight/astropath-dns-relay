@@ -217,7 +217,7 @@ jobs:
           # decrypts the DB secrets too); ASTROPATH_DNS_PORT=5353 keeps uid 10001
           # off the privileged port 53 without NET_BIND_SERVICE.
           KEK="$(docker run --rm --entrypoint python "$IMAGE" \
-            -m astropath.bootstrap gen-kek 2>/dev/null)"
+            -c 'from astropath.crypto import generate_key; print(generate_key())' 2>/dev/null)"
           docker run -d --name astropath-smoke --network "$NET" \
             -e ASTROPATH_DATABASE_DSN="$DSN" \
             -e ASTROPATH_CREDENTIAL_KEK="$KEK" \
