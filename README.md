@@ -52,9 +52,10 @@ Requires Docker and [uv](https://docs.astral.sh/uv/). This runs the gateway plus
 # 1. Install the toolchain and dependencies
 uv sync --frozen
 
-# 2. Generate bootstrap secrets (each is shown ONCE — store them vaulted).
-uv run python -m astropath.bootstrap gen-kek          # -> ASTROPATH_CREDENTIAL_KEK
-#   admin password hash (argon2id) and session secret are generated out-of-band.
+# 2. Generate the credential KEK (shown ONCE — store it vaulted).
+uv run python -c "from astropath.crypto import generate_key; print(generate_key())"
+#   -> ASTROPATH_CREDENTIAL_KEK. The admin password hash (argon2id) and session
+#   secret are generated out-of-band — see .env.example for the one-liners.
 
 # 3. Copy the env template and fill in PLACEHOLDER values (no real secrets in git)
 cp .env.example .env.local        # then edit real values into .env.local
@@ -75,38 +76,36 @@ curl -s localhost:8080/readyz      # per-plane readiness (DNS sockets/keyring/ca
 curl -s localhost:8080/metrics     # Prometheus exposition (LAN-only in production)
 ```
 
-## Bootstrap CLI walkthrough (M1, no database)
+## First-run setup
 
-M1 issues the wildcard certificate from a file/env bootstrap before the DB/API/SPA exist. All values below are placeholders.
-
-```bash
-# A KEK is required to encrypt the bootstrap file's secrets at rest.
-export ASTROPATH_CREDENTIAL_KEK="$(uv run python -m astropath.bootstrap gen-kek)"
-
-# Write a starter bootstrap file. This mints a TSIG key and reveals its secret
-# ONCE (base64 BIND form) — that exact string goes into the cert-manager Secret.
-uv run python -m astropath.bootstrap init \
-  --output astropath.bootstrap.toml \
-  --zone example.com. \
-  --record-name _acme-challenge.example.com. \
-  --provider hurricane \
-  --he-key "<HE-DYNAMIC-KEY-PLACEHOLDER>"        # from the HE dashboard, pre-created + dynamic
-
-# Emit the matching cert-manager TSIG Secret (stringData — never hand-encode .data,
-# which double-base64s to BADKEY). Use the base64 secret 'init' printed once.
-uv run python -m astropath.bootstrap secret-yaml \
-  --secret "<TSIG-SECRET-PLACEHOLDER-shown-once-by-init>"
-```
-
-Point the service at the file with `ASTROPATH_BOOTSTRAP_PATH=astropath.bootstrap.toml`. A lost one-time secret is never redisplayed — **revoke and recreate**.
-
-> **DB mode (the two-plane `serve()` stack, M2+):** the bootstrap file is **optional**. Leave `ASTROPATH_BOOTSTRAP_PATH` unset and the DB-backed routing cache is the sole keyring/routing source — TSIG keys created in the panel converge live with no restart. A configured-but-missing file still fail-fasts, and the KEK is required either way. This CLI walkthrough is the file-mode (`run()`, no-DB) path.
-
-Once the store lands (M2+), migrate the file into Postgres and retire it:
+The database is the only backend: bring the stack up, apply the schema, then mint the TSIG key in the admin panel. There is no bootstrap file. All values below are placeholders.
 
 ```bash
-uv run python -m astropath.migrate_bootstrap --bootstrap astropath.bootstrap.toml
+# 1. Fill .env.local with the KEK, the argon2id admin password hash, and the
+#    session secret (generator one-liners are in .env.example).
+
+# 2. Start Postgres and apply the schema (the image ships alembic.ini + the
+#    migrations). serve() fail-fasts (exit 2) unless the schema is at head.
+docker compose -f docker-compose.example.yml run --rm app python -m alembic upgrade head
+
+# 3. Bring the gateway up.
+docker compose -f docker-compose.example.yml up --build
 ```
+
+Then, in the admin panel (behind nginx TLS in production):
+
+1. **Log in** with the admin password whose argon2id hash seeded `ASTROPATH_ADMIN_PASSWORD_HASH`.
+2. **Add a backend** (Hurricane Electric or Route53) and a **domain** → backend routing entry. For HE, the per-record dynamic key is created out-of-band in the HE dashboard (record pre-created + flagged dynamic) and pasted into the domain.
+3. **Mint a TSIG key.** Its base64 BIND secret is revealed **once** — that exact string goes into the cert-manager Secret. A lost secret is never redisplayed: **revoke and recreate**.
+
+Create the cert-manager TSIG Secret from the shipped template (`stringData` — never a hand-encoded `.data`, which double-base64s to BADKEY), using the base64 secret the panel showed once:
+
+```bash
+# Fill the base64 secret into deploy/k8s/cert-manager/tsig-secret.example.yaml, then:
+kubectl apply -f deploy/k8s/cert-manager/tsig-secret.example.yaml
+```
+
+A TSIG key or domain added in the panel converges to the running data plane live — no restart.
 
 ## Configuration
 
@@ -118,14 +117,13 @@ Only bootstrap secrets live in the environment (SPEC §10.2); all arrive ansible
 | `ASTROPATH_CREDENTIAL_KEK` | Ordered Fernet keylist (primary first) — the KEK |
 | `ASTROPATH_ADMIN_PASSWORD_HASH` | argon2id hash seeding the admin credential |
 | `ASTROPATH_SESSION_SECRET` | Starlette session-cookie signing secret |
-| `ASTROPATH_BOOTSTRAP_PATH` | Path to the file-mode bootstrap file — **optional in DB mode** (unset → the DB is the sole keyring/routing source) |
 | `ASTROPATH_FORWARDED_ALLOW_IPS` | nginx source IP/CIDR for uvicorn proxy headers |
 | `ASTROPATH_DNS_BIND` / `_DNS_PORT` | RFC2136 listener (UDP+TCP) |
 | `ASTROPATH_HTTP_BIND` / `_HTTP_PORT` | Management API / SPA |
 | `ASTROPATH_SHUTDOWN_DRAIN_TIMEOUT` | Seconds to drain in-flight dispatches on SIGTERM |
 | `ASTROPATH_LOG_LEVEL` / `_LOG_FORMAT` | Logging (`text` or `json`) |
 
-TSIG keys and API tokens are **not** env vars — they are generated in the panel and stored encrypted/hashed (or in the M1 bootstrap file).
+TSIG keys and API tokens are **not** env vars — they are generated in the panel and stored encrypted/hashed; the database is the sole source of keyring/routing.
 
 ## Observability
 

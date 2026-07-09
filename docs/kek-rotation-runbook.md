@@ -29,7 +29,7 @@ schema/version column, no downtime window**. At-rest decrypt passes **no `ttl`**
 1. **Generate a new Fernet key.**
 
    ```
-   python -m astropath.bootstrap gen-kek
+   python -c "from astropath.crypto import generate_key; print(generate_key())"
    # prints one urlsafe-base64 Fernet key — shown once; store it ansible-vault'd.
    ```
 
