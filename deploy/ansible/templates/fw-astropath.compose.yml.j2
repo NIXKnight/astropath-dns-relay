@@ -28,7 +28,7 @@ services:
     stop_grace_period: 30s     # let the per-plane supervisors drain (SPEC §2.1 / T-M6-05)
 
     environment:
-      # --- bootstrap secrets -- ansible-vault-sourced, NEVER literals (SPEC §10.2) ---
+      # --- runtime secrets -- ansible-vault-sourced, NEVER literals (SPEC §10.2) ---
       # DSN embeds the pgsql_dbs_users password; its host must resolve the
       # host-managed Postgres from inside the container (host.docker.internal
       # via the extra_hosts mapping below, or the docker bridge gateway).
@@ -51,24 +51,13 @@ services:
       ASTROPATH_DNS_BIND: "0.0.0.0"
       ASTROPATH_DNS_PORT: "{{ astropath_dns_port }}"
 
-      # --- HTTP admin/API plane (behind nginx) ---
+      # --- HTTP admin/API plane (behind nginx); also serves /metrics (SPEC §11.1) ---
       ASTROPATH_HTTP_BIND: "0.0.0.0"
       ASTROPATH_HTTP_PORT: "8080"
-
-      # --- M1 no-DB bootstrap file (SPEC §16). KEK-encrypted at rest, vault-delivered. ---
-      ASTROPATH_BOOTSTRAP_PATH: "/etc/astropath/astropath.bootstrap.toml"
-
-      # --- interim M1 metrics exposition (SPEC §11.1). LAN exposure via nginx only (§8.7). ---
-      ASTROPATH_METRICS_PORT: "{{ astropath_metrics_port }}"
 
       # --- logging (SPEC §11.4) ---
       ASTROPATH_LOG_LEVEL: "{{ astropath_log_level }}"
       ASTROPATH_LOG_FORMAT: "{{ astropath_log_format }}"
-
-    volumes:
-      # KEK-encrypted M1 bootstrap file (vault-delivered by the private repo),
-      # mounted read-only. Retired after the M1->M2 DB migration (SPEC §16.3).
-      - "{{ astropath_bootstrap_host_path }}:/etc/astropath/astropath.bootstrap.toml:ro"
 
     ports:
       # RFC2136 UPDATE listener -- BOTH udp AND tcp are mandatory (TSIG-signed
@@ -77,11 +66,11 @@ services:
       # (astropath.nftables.nft.j2 / host_prerequisites.md).
       - "{{ astropath_dns_port }}:{{ astropath_dns_port }}/udp"
       - "{{ astropath_dns_port }}:{{ astropath_dns_port }}/tcp"
-      # HTTP plane -- loopback only; reached solely by the host nginx vhost.
+      # HTTP plane (admin/API + /metrics) -- loopback only; reached solely by the
+      # host nginx vhost. /metrics rides this port since M3 (no separate listener);
+      # LAN scraping goes through the nginx allowlist vhost (SPEC §8.7), never the
+      # WAN. Cross-ref deploy/k8s/ for the cluster-side scrape.
       - "127.0.0.1:8080:8080/tcp"
-      # Interim metrics -- loopback only; never LAN-exposed except via the nginx
-      # allowlist vhost (SPEC §8.7). Cross-ref deploy/k8s/ for cluster scraping.
-      - "127.0.0.1:{{ astropath_metrics_port }}:{{ astropath_metrics_port }}/tcp"
 
     extra_hosts:
       # Makes the host-managed Postgres addressable as host.docker.internal from

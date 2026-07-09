@@ -77,40 +77,14 @@ in the compose template) or the docker bridge gateway. Ensure:
 - the password embedded in `vault_astropath_database_dsn` matches
   `vault_astropath_db_password` used by `pgsql_dbs_users`.
 
-Note: M1 issues the wildcard cert from the KEK-encrypted bootstrap file (SPEC
-§16) with **no DB**; Postgres is required from M2 onward. Provision it now so the
-M1->M2 migration (`astropath-migrate-bootstrap`) has a target.
+Note: the DB is the **sole config source** -- keyring, provider routing, and TSIG
+keys all live in Postgres (SPEC §10). The relay does not serve without it, so
+provision Postgres before first deploy.
 
-## 6. Bootstrap file permissions and compose `$`-escaping
+## 6. Compose `$`-escaping of the argon2 admin hash
 
-Two container-runtime traps that crash-loop the stack before it serves a single
-request. Both bite from-scratch first boots and are easy to miss.
-
-### 6.1 The bootstrap file must be readable by the container UID (`10001`)
-
-**File mode only.** This trap applies solely when deploying **with** a bootstrap
-file. In DB mode (`serve()` with `ASTROPATH_BOOTSTRAP_PATH` unset) there is no
-file to mount and the DB is the sole keyring/routing source (SPEC §10/§16), so
-this section does not apply — skip it and drop the file mount/env from the
-compose stack.
-
-The image runs non-root as a fixed `uid:gid` of **`10001:10001`** (SPEC §15.2),
-and the M1 bootstrap file is mounted read-only
-(`{{ astropath_bootstrap_host_path }}:/etc/astropath/astropath.bootstrap.toml:ro`).
-If the host file is `0600` owned by a host uid other than `10001`, the container
-process cannot read it -> **`PermissionError` at startup -> crash-loop**.
-
-The file content is **KEK ciphertext** (SPEC §16 -- every secret inside is
-encrypted at rest), so relaxing the mode exposes no plaintext. Make it readable
-by uid `10001` one of two ways:
-
-- `chmod 0644 <bootstrap-file>` -- world-readable ciphertext is acceptable; or
-- `chown 10001:10001 <bootstrap-file>` (then `0640`/`0600` both work).
-
-Do **not** ship `0600` owned by root / the deploy user and expect the container
-to read it.
-
-### 6.2 argon2 hashes via compose `env_file` need every `$` doubled (`$$`)
+A container-runtime trap that crash-loops the stack before it serves a single
+request. It bites from-scratch first boots and is easy to miss.
 
 Docker Compose interpolates `$...` sequences in the values it loads. An argon2id
 hash is dense with `$` (`$argon2id$v=19$m=65536,t=3,p=4$<salt>$<hash>`), so when

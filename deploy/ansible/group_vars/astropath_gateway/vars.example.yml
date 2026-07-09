@@ -29,12 +29,8 @@ astropath_docker_subnet: "172.31.0.0/24"
 # drops the fixed subnet, set this to the source IP uvicorn actually observes.
 astropath_forwarded_allow_ips: "172.31.0.1"
 
-# --- host paths ---
-# KEK-encrypted M1 bootstrap file on the host (vault-delivered), mounted RO.
-astropath_bootstrap_host_path: "/etc/astropath/astropath.bootstrap.toml"
-
-# --- metrics + logging (SPEC §11) ---
-astropath_metrics_port: 9090
+# --- logging (SPEC §11.4) ---
+# Metrics need no port var: /metrics is served on the HTTP plane (port 8080).
 astropath_log_level: "INFO"
 astropath_log_format: "text"          # "json" if the image build enables it (SPEC §11.4)
 

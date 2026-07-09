@@ -18,7 +18,6 @@ side lives in `deploy/k8s/` (authored separately) -- cross-referenced below.
 | `ansible-vault`-encrypted secret **values** for every `vault_astropath_*` name | private repo |
 | The `docker-compose-service`, `pgsql_dbs_users`, `nginx`, and `nftables` roles | private repo |
 | LAN wildcard TLS certificate + key | private repo |
-| The KEK-encrypted bootstrap file (`astropath.bootstrap.toml`, SPEC §16) — **file mode only; optional in DB mode** (unset → DB is the source) | private repo (vault-delivered) |
 | Concrete published image tag | private repo (pins it) |
 
 ## What THIS tree provides
@@ -50,6 +49,16 @@ and how it wires the environment; this repo only provides the template content i
 renders. Everything under `environment:` in the compose template resolves from
 `vars.example.yml` (non-secret) and the vault (secret) at render time.
 
+## First TSIG key -- from the admin panel, not a file
+
+File mode is gone: there is **no bootstrap file to provision**. The DB is the sole
+config source, so a from-scratch deploy starts with an empty keyring. The operator
+logs into the admin vhost (`astropath.<domain>`) with the seed admin credential
+(`ASTROPATH_ADMIN_PASSWORD_HASH`) and **generates the first TSIG key in the
+panel**. That key then populates the cert-manager `Secret` on the cluster side --
+see `deploy/k8s/cert-manager/tsig-secret.example.yaml` -- and cert-manager signs
+its RFC2136 UPDATEs with it (SPEC §14.7).
+
 ## The proxy-header pairing (do not skip)
 
 nginx sets `X-Forwarded-Proto/-For/Host`; uvicorn trusts them **only** from
@@ -64,14 +73,13 @@ Before first deploy, satisfy `host_prerequisites.md`: host NTP/chrony (TSIG skew
 > 300s fudge -> 100% BADTIME), the non-53 RFC2136 port decision, the firewall
 source restriction (Cilium masquerade caveat), the `astropath.<domain>` DNS
 A-record, the host-Postgres listen/`pg_hba` reachability from the container
-subnet, the bootstrap file's readability by the container uid (`10001`, file
-mode only — omit it in DB mode), and the `$$`-escaping of the argon2 admin hash
-wherever it passes through Docker Compose.
+subnet, and the `$$`-escaping of the argon2 admin hash wherever it passes through
+Docker Compose.
 
 ## References
 
 - `SPEC.md` §15.4 (Ansible/host deploy), §8.6/§2 (proxy headers), §14.7
-  (firewall UDP+TCP + Cilium masquerade), §11 (BADTIME/NTP), §16 (M1 bootstrap).
+  (firewall UDP+TCP + Cilium masquerade), §11 (BADTIME/NTP).
 - Repo-root `docker-compose.example.yml` + `.env.example` -- the dev-only stack
   these production examples stay consistent with.
 - `deploy/k8s/` -- cert-manager ClusterIssuer, TSIG Secret, egress/NetworkPolicy,
