@@ -45,6 +45,7 @@ M3 login path MUST call :func:`hash_password` / :func:`verify_password` via
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import hmac
 import json
@@ -65,6 +66,7 @@ __all__ = [
     "build_domain",
     "build_tsig_key",
     "generate_token",
+    "generate_tsig_secret",
     "hash_password",
     "hash_token",
     "password_needs_rehash",
@@ -130,6 +132,16 @@ def generate_token() -> str:
     persisted. A lost token is revoked and recreated, never redisplayed.
     """
     return secrets.token_urlsafe(_TOKEN_BYTES)
+
+
+def generate_tsig_secret() -> str:
+    """Mint a fresh 32-byte HMAC secret in base64 BIND form (SPEC §9.1).
+
+    This base64 string is what goes verbatim into the cert-manager TSIG Secret so
+    both sides key identically; it is stored KEK-encrypted and revealed once. A
+    lost secret is revoked and recreated, never redisplayed.
+    """
+    return base64.b64encode(secrets.token_bytes(32)).decode("ascii")
 
 
 def hash_token(token: str) -> str:

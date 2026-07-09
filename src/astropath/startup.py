@@ -16,28 +16,23 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-"""Startup configuration fail-fast (SPEC §16, LOW-5, T-M1-26).
+"""Startup configuration fail-fast (SPEC §11.3, LOW-5, T-M6-10).
 
 Every precondition that can be checked cheaply is checked *before* the process
 binds its readiness — a misconfigured relay must crash loudly at boot, never
-half-serve. The M1 subset validates:
+half-serve.
 
-* the KEK keylist entries are valid 32-byte urlsafe-base64 Fernet keys,
-* the bootstrap file (when configured) is present and decrypts under that KEK —
-  ``run()`` (file mode) requires it; ``serve()`` (DB mode) treats an unset path
-  as a valid empty seed (``require_bootstrap=False``), the DB being the source,
-* every configured provider type resolves in the provider ``REGISTRY``,
-* every configured TSIG algorithm maps to a dnspython algorithm.
+:func:`validate_kek` validates the credential KEK up front (the KEK is always
+required — it decrypts the DB-stored provider/TSIG/HE secrets). Then, for the
+two-plane composition (:func:`astropath.main.serve`), :func:`validate_db_startup`
+runs the full SPEC §11.3 checklist before readiness is bound: the SPA-directory
+presence policy, database reachability (a bounded connect smoke test), the schema
+being at the Alembic head, every ``Backend.type`` resolving in the provider
+registry, and every ``TsigKey.algorithm`` mapping.
 
 All failures raise :class:`StartupError` with a message that names the offending
-zone / provider / algorithm / key **position** — never a secret value.
-
-For the DB-backed composition (:func:`astropath.main.serve`), :func:`validate_db_startup`
-extends the checklist to the full SPEC §11.3 set before readiness is bound: the
-SPA-directory presence policy, database reachability (a bounded connect smoke
-test), the schema being at the Alembic head, every ``Backend.type`` resolving in
-the provider registry, and every ``TsigKey.algorithm`` mapping. Messages carry
-revision ids / provider / algorithm names — never a DSN, key, or secret value.
+revision / provider / algorithm / key **position** — never a DSN, key, or secret
+value.
 """
 
 from __future__ import annotations
@@ -49,103 +44,41 @@ from sqlalchemy import Connection
 from sqlalchemy.ext.asyncio import AsyncEngine
 from sqlmodel import select
 
-from astropath.assembly import BootstrapConfig
-from astropath.bootstrap import BootstrapError, load_bootstrap
-from astropath.crypto import InvalidToken, Kek, KekError
+from astropath.crypto import Kek, KekError
 from astropath.data_plane.tsig import UnknownAlgorithm, algorithm_from_text
 from astropath.db import Database
 from astropath.models import Backend, TsigKey
 from astropath.providers.base import UnknownProvider, get_provider
 from astropath.settings import Settings
 
-__all__ = ["StartupError", "validate_and_load", "validate_db_startup"]
+__all__ = ["StartupError", "validate_db_startup", "validate_kek"]
 
 
 class StartupError(RuntimeError):
     """A startup precondition failed; the process must not bind readiness.
 
-    Messages are safe to log: they identify configuration by zone, provider,
+    Messages are safe to log: they identify configuration by revision, provider,
     algorithm, or key *position*, and never carry a decrypted secret.
     """
 
 
-def validate_and_load(
-    kek_keylist: str | None,
-    bootstrap_path: str | Path | None,
-    *,
-    require_bootstrap: bool = True,
-) -> tuple[Kek, BootstrapConfig]:
-    """Validate the startup preconditions and return ``(kek, config)``.
+def validate_kek(kek_keylist: str | None) -> Kek:
+    """Validate the credential KEK and return it (SPEC §7 / §11.3).
 
-    The KEK is always required (it also decrypts the DB-stored secrets).
-    ``require_bootstrap`` selects the bootstrap-file policy:
-
-    * :func:`astropath.main.run` (M1 file mode) passes the default ``True`` — an
-      unset ``bootstrap_path`` hard-fails, because the file is the only config
-      source.
-    * :func:`astropath.main.serve` (DB mode) passes ``False`` — an unset
-      ``bootstrap_path`` is a valid boot and yields an **empty**
-      :class:`BootstrapConfig` (an empty keyring/routing seed), leaving the
-      DB-backed :class:`~astropath.cache.RoutingCache` as the sole config source
-      (SPEC §10/§16). When a path *is* configured it is validated identically in
-      both modes.
-
-    Raises :class:`StartupError` on any failure — malformed KEK, a
-    configured-but-missing or undecryptable bootstrap file, an unknown provider
-    type, or an unsupported TSIG algorithm. On success the returned pair is ready
-    for :func:`astropath.bootstrap.build_data_plane`; nothing else needs to
-    re-parse or re-decrypt.
+    The KEK is always required: it decrypts the DB-stored provider configs, TSIG
+    secrets, and HE per-record keys. Raises :class:`StartupError` on an unset or
+    malformed keylist — the message names the offending key **position**, never
+    the raw key material.
     """
     if not kek_keylist:
         raise StartupError(
             "credential KEK is not configured (set ASTROPATH_CREDENTIAL_KEK)"
         )
     try:
-        kek = Kek.from_keylist(kek_keylist)
+        return Kek.from_keylist(kek_keylist)
     except KekError as exc:
         # KekError already redacts to key position; never echo the raw keylist.
         raise StartupError(f"invalid credential KEK: {exc}") from exc
-
-    if bootstrap_path is None:
-        if require_bootstrap:
-            raise StartupError(
-                "bootstrap path is not configured (set ASTROPATH_BOOTSTRAP_PATH)"
-            )
-        # DB mode (serve()): no file is a valid boot. Seed an empty keyring/
-        # routing; the DB-backed RoutingCache is the sole config source (§10/§16).
-        return kek, BootstrapConfig()
-    path = Path(bootstrap_path)
-    if not path.is_file():
-        raise StartupError(f"bootstrap file not found: {path}")
-
-    try:
-        config = load_bootstrap(path, kek)
-    except BootstrapError as exc:
-        raise StartupError(f"bootstrap file is invalid: {exc}") from exc
-    except InvalidToken as exc:
-        # Wrong KEK for the stored ciphertext — message carries no secret.
-        raise StartupError(
-            f"bootstrap secrets do not decrypt under the configured KEK: {path}"
-        ) from exc
-
-    for zone in config.zones:
-        try:
-            get_provider(zone.provider)
-        except UnknownProvider as exc:
-            raise StartupError(
-                f"zone {zone.zone!r} references unknown provider {zone.provider!r}"
-            ) from exc
-
-    for spec in config.tsig_keys:
-        try:
-            algorithm_from_text(spec.algorithm)
-        except UnknownAlgorithm as exc:
-            raise StartupError(
-                f"TSIG key {spec.name!r} uses unsupported algorithm "
-                f"{spec.algorithm!r}"
-            ) from exc
-
-    return kek, config
 
 
 def _alembic_head(alembic_ini: str) -> str | None:

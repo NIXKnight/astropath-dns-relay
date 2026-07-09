@@ -47,12 +47,11 @@ from astropath.api.schemas import (
     TsigKeyCreated,
     TsigKeyRead,
 )
-from astropath.bootstrap import generate_tsig_secret
 from astropath.cache import RoutingCache
 from astropath.crypto import Kek
 from astropath.data_plane.tsig import UnknownAlgorithm, algorithm_from_text
 from astropath.models import TsigKey
-from astropath.store import SecretCodec, build_tsig_key
+from astropath.store import SecretCodec, build_tsig_key, generate_tsig_secret
 
 __all__ = ["router"]
 

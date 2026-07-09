@@ -82,10 +82,9 @@ SnapshotLoader = Callable[[], Awaitable["CacheSnapshot"]]
 async def load_config_from_db(session: AsyncSession, kek: Kek) -> BootstrapConfig:
     """Decrypt the persisted rows into a :class:`BootstrapConfig` (SPEC §16.3).
 
-    Mirrors :func:`astropath.bootstrap.load_bootstrap` but reads the database:
-    every ``TsigKey`` becomes a :class:`TsigKeySpec`; every ``Backend`` becomes a
-    :class:`BackendConfig` with its ``config_encrypted`` JSON decrypted in memory
-    (T-M5-05 — the per-backend credential wiring M2 deferred; HE decrypts to an
+    The database is the sole source: every ``TsigKey`` becomes a
+    :class:`TsigKeySpec`; every ``Backend`` becomes a :class:`BackendConfig` with
+    its ``config_encrypted`` JSON decrypted in memory (T-M5-05 — HE decrypts to an
     empty config); every ``Domain`` becomes a :class:`ZoneConfig` bound to its
     backend, with the HE per-record key decrypted. Listener bind/port are process
     config (Settings), not DB rows, so the defaults are left untouched.

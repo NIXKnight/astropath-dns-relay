@@ -41,8 +41,7 @@ class Settings(BaseSettings):
     Only bootstrap secrets live in the environment (SPEC §10.2): the database
     DSN, the credential KEK/keylist, the admin password hash, and the session
     signing secret. TSIG keys and API tokens are deliberately *not* environment
-    variables — they are generated in the panel and stored encrypted/hashed
-    (M2+) or in the M1 bootstrap file.
+    variables — they are generated in the panel and stored encrypted/hashed.
     """
 
     model_config = SettingsConfigDict(
@@ -64,17 +63,6 @@ class Settings(BaseSettings):
 
     session_secret: SecretStr
     """Starlette ``SessionMiddleware`` signing secret (SPEC §8.2)."""
-
-    # --- M1 data-plane bootstrap (SPEC §16) ---
-    bootstrap_path: str | None = None
-    """Path to the KEK-encrypted TOML bootstrap file that seeds the M1 data plane.
-
-    Required by the M1 data plane (``main()`` fail-fasts if unset, T-M1-26); the
-    M2 database supersedes it as the source of keyring/routing.
-    """
-
-    metrics_port: int = 9090
-    """Prometheus exposition port for the interim data-plane metrics server (SPEC §11.1)."""
 
     # --- Non-secret runtime configuration (SPEC §10.2) ---
     forwarded_allow_ips: str = "127.0.0.1"
@@ -100,6 +88,11 @@ class Settings(BaseSettings):
     http_port: int = 8080
     log_level: str = "INFO"
     log_format: str = "text"
+
+    metrics_port: int = 9090
+    """Prometheus exposition port (SPEC §11.1). The two-plane ``serve()`` stack
+    exposes ``/metrics`` on the HTTP plane; this value is retained for the
+    deployment env contract (``ASTROPATH_METRICS_PORT``)."""
 
     shutdown_drain_timeout: float = 10.0
     """Seconds to drain in-flight DNS dispatches on SIGTERM before force-closing

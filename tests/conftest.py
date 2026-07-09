@@ -152,7 +152,7 @@ def pg_dsn() -> Iterator[str]:
 @pytest.fixture(scope="session")
 def pg_migrated(pg_dsn: str) -> str:
     """Apply ``alembic upgrade head`` once against the shared container."""
-    from astropath.migrate_bootstrap import apply_migrations
+    from tests._db import apply_migrations
 
     apply_migrations(pg_dsn)
     return pg_dsn

@@ -27,8 +27,7 @@ preserving the original creation timestamp).
 
 Rotation runbook (SPEC §7.3)
 ----------------------------
-1. Generate a new Fernet key (``astropath.crypto.generate_key`` /
-   ``astropath-bootstrap gen-kek``).
+1. Generate a new Fernet key (``astropath.crypto.generate_key``).
 2. **Prepend** it to ``ASTROPATH_CREDENTIAL_KEK`` (ordered list, primary first);
    keep the retired key in the list. Store the keylist ansible-vault'd.
 3. Rolling-restart the service. ``MultiFernet([new, old])`` now writes new-key

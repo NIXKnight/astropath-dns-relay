@@ -21,8 +21,8 @@
 Runs the store against a real ephemeral Postgres with the asyncpg driver (no
 SQLite — dialect fidelity matters). ``alembic upgrade head`` is the first step
 (catching model/metadata drift), then async CRUD, the DB-backed routing cache,
-real ChallengeEvent audit writes, the bootstrap→DB migration, and KEK rotation
-are all exercised end-to-end. The suite skips cleanly if Docker is unavailable.
+real ChallengeEvent audit writes, and KEK rotation are all exercised end-to-end.
+The suite skips cleanly if Docker is unavailable.
 """
 
 from __future__ import annotations
@@ -43,16 +43,14 @@ from prometheus_client import CollectorRegistry
 from sqlalchemy import inspect, text
 from sqlalchemy.ext.asyncio import AsyncEngine
 from sqlmodel import select
+from tests._db import apply_migrations
 from tests._fakes import FakeProvider, routing_for
 
-from astropath.assembly import BootstrapConfig, ZoneConfig
 from astropath.audit import DbAuditSink
 from astropath.cache import RoutingCache, load_config_from_db, make_db_loader
 from astropath.crypto import Kek, generate_key
 from astropath.data_plane.dispatcher import Dispatcher
-from astropath.data_plane.tsig import TsigKeySpec
 from astropath.db import Database
-from astropath.migrate_bootstrap import apply_migrations, insert_bootstrap_rows
 from astropath.models import (
     AdminCredential,
     ApiToken,
@@ -223,22 +221,34 @@ async def test_async_crud_round_trip_keeps_secrets_encrypted(db: Database) -> No
 # DB-backed routing cache serves from Postgres
 # --------------------------------------------------------------------------- #
 async def _seed_he_zone(db: Database, kek: Kek) -> None:
+    # Seed a TSIG key + one Hurricane backend + its domain (the HE per-record key
+    # KEK-encrypted on the Domain, HIGH-7) directly through the store builders.
+    codec = SecretCodec(kek)
     async with db.session() as session:
-        await insert_bootstrap_rows(
-            session,
-            BootstrapConfig(
-                tsig_keys=[TsigKeySpec("cm-key.", "hmac-sha256", _TSIG_SECRET_B64)],
-                zones=[
-                    ZoneConfig(
-                        "example.com.",
-                        "hurricane",
-                        "_acme-challenge.example.com.",
-                        _HE_KEY,
-                    )
-                ],
-            ),
-            kek,
+        session.add(
+            build_tsig_key(
+                codec,
+                name="cm-key.",
+                algorithm="hmac-sha256",
+                secret_b64=_TSIG_SECRET_B64,
+            )
         )
+        backend = build_backend(
+            codec, name="hurricane", backend_type="hurricane", config={}
+        )
+        session.add(backend)
+        await session.flush()  # assign backend.id before the domain references it
+        assert backend.id is not None
+        session.add(
+            build_domain(
+                codec,
+                zone="example.com.",
+                backend_id=backend.id,
+                record_name="_acme-challenge.example.com.",
+                he_dynamic_key=_HE_KEY,
+            )
+        )
+        await session.commit()
 
 
 async def test_cache_loads_and_serves_from_db(
@@ -356,19 +366,19 @@ async def test_dispatch_writes_one_challenge_event_row(
 
 
 # --------------------------------------------------------------------------- #
-# Bootstrap → DB migration serves identically
+# DB rows serve the HE zone with the per-record key intact
 # --------------------------------------------------------------------------- #
-async def test_migrated_bootstrap_serves_identically(
+async def test_db_rows_serve_he_zone(
     db: Database, http_client: httpx.AsyncClient
 ) -> None:
     kek = Kek([generate_key()])
-    await _seed_he_zone(db, kek)  # same rows astropath-migrate-bootstrap would write
+    await _seed_he_zone(db, kek)
 
     cache = RoutingCache(make_db_loader(db.sessionmaker, kek, http_client))
     await cache.refresh()
 
-    # The data plane resolves the zone and holds the HE per-record key —
-    # identical service to the M1 file path, now sourced from Postgres.
+    # The data plane resolves the zone and holds the HE per-record key, sourced
+    # from Postgres via the shared assembly path.
     route = cache.match(dns.name.from_text("example.com."))
     assert route is not None
     assert route.record_name == dns.name.from_text("_acme-challenge.example.com.")

@@ -28,20 +28,15 @@ healthy sibling) — per SPEC §2.1 / HIGH-1. A shared :class:`asyncio.Event`
 coordinates graceful shutdown: SIGTERM and SIGINT set it, both planes wind down,
 and resources are disposed exactly once.
 
-Two entrypoints:
-
-- :func:`run` — the M1 data-plane-only runner (file-sourced keyring/routing, no
-  DB, no management plane). Preserved verbatim for the M1 deployment path and its
-  tests.
-- :func:`serve` — the M3 production composition. Supervisor A is the RFC2136 data
-  plane; **supervisor B** embeds the FastAPI management app under
-  ``uvicorn.Server(uvicorn.Config(app, log_config=None, proxy_headers=True,
-  forwarded_allow_ips=..., lifespan="off"))``. uvicorn's own signal capture is
-  neutralized (this module owns SIGTERM/SIGINT) and its graceful stop is driven by
-  ``server.should_exit`` off the same ``shutdown`` event. A single DB-backed
-  :class:`~astropath.cache.RoutingCache` is shared: the management API refreshes it
-  on writes (T-M3-16) and the data plane reads it (routing + live keyring), so a
-  TSIG key or domain added in the panel converges without a restart.
+:func:`serve` is the production composition. Supervisor A is the RFC2136 data
+plane; **supervisor B** embeds the FastAPI management app under
+``uvicorn.Server(uvicorn.Config(app, log_config=None, proxy_headers=True,
+forwarded_allow_ips=..., lifespan="off"))``. uvicorn's own signal capture is
+neutralized (this module owns SIGTERM/SIGINT) and its graceful stop is driven by
+``server.should_exit`` off the same ``shutdown`` event. A single DB-backed
+:class:`~astropath.cache.RoutingCache` is the **sole** source of routing + live
+keyring: the management API refreshes it on writes (T-M3-16) and the data plane
+reads it, so a TSIG key or domain added in the panel converges without a restart.
 """
 
 from __future__ import annotations
@@ -52,27 +47,25 @@ import logging
 import signal
 from collections.abc import Awaitable, Callable, Generator
 
-import dns.name
 import httpx
 import uvicorn
 from fastapi import FastAPI
 from prometheus_client import CollectorRegistry
 
 from astropath.api.app import create_app
-from astropath.assembly import build_data_plane
 from astropath.audit import DbAuditSink
-from astropath.cache import Keyring, RoutingCache, make_db_loader
-from astropath.data_plane.dispatcher import Dispatcher, Route, RoutingSource
+from astropath.cache import RoutingCache, make_db_loader
+from astropath.data_plane.dispatcher import Dispatcher
 from astropath.data_plane.server import Rfc2136Server
 from astropath.db import Database
 from astropath.logging_config import configure_logging
-from astropath.observability import DataPlaneMetrics, start_metrics_server
+from astropath.observability import DataPlaneMetrics
 from astropath.providers._http import build_async_client
 from astropath.settings import Settings, get_settings
-from astropath.startup import StartupError, validate_and_load, validate_db_startup
+from astropath.startup import StartupError, validate_db_startup, validate_kek
 from astropath.supervisor import RestartLimiter, supervise
 
-__all__ = ["build_management_server", "main", "run", "serve"]
+__all__ = ["build_management_server", "main", "serve"]
 
 log = logging.getLogger("astropath.main")
 
@@ -85,96 +78,6 @@ def _install_signal_handlers(shutdown: asyncio.Event) -> None:
             loop.add_signal_handler(sig, shutdown.set)
         except NotImplementedError:  # pragma: no cover — non-Unix event loop
             signal.signal(sig, lambda *_: shutdown.set())
-
-
-async def run(
-    settings: Settings,
-    *,
-    shutdown: asyncio.Event | None = None,
-    install_signals: bool = True,
-    http_client: httpx.AsyncClient | None = None,
-) -> int:
-    """Run the M1 data plane until shutdown; return the process exit code.
-
-    ``main()`` owns every shared resource created here and disposes it exactly
-    once on the way out. Returns ``0`` for a clean, shutdown-driven stop and
-    ``1`` when the data plane exhausts its restart budget (surface unhealthy so
-    the orchestrator restarts the whole process). Startup validation failures
-    propagate as :class:`~astropath.startup.StartupError` before any resource is
-    allocated. Tests inject ``shutdown``/``http_client`` and disable signals;
-    an injected client is owned by the caller and is not closed here.
-    """
-    kek, config = validate_and_load(
-        settings.credential_kek.get_secret_value(), settings.bootstrap_path
-    )
-    shutdown = shutdown if shutdown is not None else asyncio.Event()
-
-    owns_client = http_client is None
-    client = http_client if http_client is not None else build_async_client()
-    registry = CollectorRegistry()
-    metrics = DataPlaneMetrics(registry=registry)
-    metrics_server, _thread = start_metrics_server(
-        settings.metrics_port, registry=registry
-    )
-
-    server: Rfc2136Server | None = None
-    dns_task: asyncio.Task[None] | None = None
-    try:
-        runtime = build_data_plane(config, http_client=client)
-        dispatcher = Dispatcher(runtime.routing, metrics)
-        server = Rfc2136Server(
-            runtime.keyring,
-            dispatcher,
-            metrics,
-            host=config.listener_host,
-            port=config.listener_port,
-        )
-        if install_signals:
-            _install_signal_handlers(shutdown)
-
-        # Supervisor A — the data plane. Supervisor B (management/uvicorn) joins
-        # in serve() as a second, independent supervise() task sharing shutdown.
-        dns_task = asyncio.create_task(
-            supervise("dns", server.serve, shutdown, RestartLimiter(), metrics),
-            name="plane-dns",
-        )
-        shutdown_wait = asyncio.create_task(shutdown.wait(), name="shutdown-wait")
-
-        log.info(
-            "data plane serving",
-            extra={"host": config.listener_host, "port": server.port},
-        )
-        await asyncio.wait(
-            {dns_task, shutdown_wait}, return_when=asyncio.FIRST_COMPLETED
-        )
-        # If the plane task finished first it gave up (serve_forever only ends
-        # via cancellation); otherwise shutdown was requested and we cancel it.
-        plane_gave_up = dns_task.done()
-
-        # Graceful drain (SPEC §2/§3, T-M6-05): stop accepting, drain in-flight
-        # dispatches (bounded) before any resource is torn down.
-        server.stop_accepting()
-        await server.drain(settings.shutdown_drain_timeout)
-        if not shutdown_wait.done():
-            shutdown_wait.cancel()
-        await asyncio.gather(shutdown_wait, return_exceptions=True)
-
-        if plane_gave_up:
-            log.error("data plane exhausted its restart budget; exiting unhealthy")
-            return 1
-        log.info("graceful shutdown complete")
-        return 0
-    finally:
-        # HTTP client released, then the DNS sockets last (drained above); the
-        # interim metrics server is stopped last of all.
-        if owns_client:
-            await client.aclose()
-        if server is not None:
-            if dns_task is not None and not dns_task.done():
-                dns_task.cancel()
-                await asyncio.gather(dns_task, return_exceptions=True)
-            server.close()
-        metrics_server.shutdown()
 
 
 @contextlib.contextmanager
@@ -244,35 +147,19 @@ def _management_factory(
     return _factory
 
 
-class _CompositeRouting:
-    """Route via the DB cache first, falling back to the file table (T-M3-16).
-
-    The management API writes converge to the data plane through the shared
-    :class:`~astropath.cache.RoutingCache`; the file-sourced table (M1 bootstrap)
-    remains a fallback until every zone is migrated into the database.
-    """
-
-    __slots__ = ("_cache", "_fallback")
-
-    def __init__(self, cache: RoutingSource, fallback: RoutingSource) -> None:
-        self._cache = cache
-        self._fallback = fallback
-
-    def match(self, zone: dns.name.Name) -> Route | None:
-        primary = self._cache.match(zone)
-        if primary is not None:
-            return primary
-        return self._fallback.match(zone)
-
-
 async def _safe_initial_refresh(cache: RoutingCache) -> None:
-    """Best-effort startup cache load (SPEC §6.4): a DB blip must not crash."""
+    """Best-effort startup cache load (SPEC §6.4): a DB blip must not crash.
+
+    On failure DNS readiness stays false (the cache is empty) but the process does
+    not crash — it retries as the management API writes converge, or on the next
+    boot once the database is reachable.
+    """
     try:
         await cache.refresh()
     except Exception:  # noqa: BLE001 - degraded start is intentional (SPEC §6.4)
         log.warning(
-            "initial routing cache refresh failed; serving file config until the "
-            "database is reachable"
+            "initial routing cache refresh failed; DNS readiness stays false until "
+            "the database is reachable"
         )
 
 
@@ -285,32 +172,23 @@ async def serve(
 ) -> int:
     """Run both planes (data + management) until shutdown; return the exit code.
 
-    Supervisor A is the RFC2136 data plane, overlaid live by the shared DB cache;
-    supervisor B embeds the FastAPI app under uvicorn. The bootstrap file is
-    OPTIONAL here (SPEC §10/§16): when set it seeds the keyring/routing (and the
-    listener bind/port) as in file mode; when unset the plane boots with an empty
-    seed and the DB cache is the sole source, binding ``ASTROPATH_DNS_BIND`` /
-    ``ASTROPATH_DNS_PORT``. Both planes share one ``shutdown`` event. Returns ``0``
-    on a clean stop and ``1`` when either plane exhausts its restart budget.
-    Startup validation failures (a malformed KEK, a configured-but-missing file,
-    an unreachable/stale DB) raise :class:`~astropath.startup.StartupError` before
+    Supervisor A is the RFC2136 data plane, driven live by the shared DB cache;
+    supervisor B embeds the FastAPI app under uvicorn. The database is the sole
+    backend (SPEC §16): the DB-backed :class:`~astropath.cache.RoutingCache` is the
+    only source of the keyring + routing, and the listener binds
+    ``ASTROPATH_DNS_BIND`` / ``ASTROPATH_DNS_PORT``. Both planes share one
+    ``shutdown`` event. Returns ``0`` on a clean stop and ``1`` when either plane
+    exhausts its restart budget. Startup validation failures (a malformed KEK, an
+    unreachable/stale DB) raise :class:`~astropath.startup.StartupError` before
     resources are allocated (preserving the ``main()`` return-2 contract).
     """
-    # DB mode: the bootstrap file is OPTIONAL (SPEC §10/§16). No file → an empty
-    # keyring/routing seed; the DB-backed RoutingCache is the sole config source.
-    # A file, when set, still validates + seeds exactly as before.
-    kek, config = validate_and_load(
-        settings.credential_kek.get_secret_value(),
-        settings.bootstrap_path,
-        require_bootstrap=False,
-    )
+    kek = validate_kek(settings.credential_kek.get_secret_value())
     shutdown = shutdown if shutdown is not None else asyncio.Event()
 
     owns_client = http_client is None
     client = http_client if http_client is not None else build_async_client()
     # Metrics are exposed by the FastAPI app's /metrics route (T-M3-14), which
-    # serves this exact registry — the M1 interim start_http_server is folded into
-    # the app, so there is no separate metrics port in the two-plane path.
+    # serves this exact registry.
     registry = CollectorRegistry()
     metrics = DataPlaneMetrics(registry=registry)
 
@@ -326,44 +204,27 @@ async def serve(
         # engine + client and main() returns 2.
         await validate_db_startup(database, settings)
         await _safe_initial_refresh(cache)
-        runtime = build_data_plane(config, http_client=client)
-        # DNS listener bind/port: the bootstrap file's [listener] when a file seeds
-        # the plane (file mode, unchanged); otherwise the DB-mode env config
-        # (ASTROPATH_DNS_BIND / ASTROPATH_DNS_PORT, SPEC §10.2) — with no file the
-        # empty seed carries no [listener] to source them from.
-        if settings.bootstrap_path is None:
-            listener_host, listener_port = settings.dns_bind, settings.dns_port
-        else:
-            listener_host, listener_port = config.listener_host, config.listener_port
-        routing = _CompositeRouting(cache, runtime.routing)
         dispatcher = Dispatcher(
-            routing,
+            cache,  # the RoutingCache is the sole RoutingSource
             metrics,
             audit=DbAuditSink(database.sessionmaker),
             tsig_key_resolver=cache.tsig_key_id_for,
         )
-        file_keyring = runtime.keyring
-
-        def _keyring() -> Keyring:
-            # File keyring overlaid by the live cache keyring (API-added keys win).
-            return {**file_keyring, **cache.keyring}
-
         dns_server = Rfc2136Server(
-            _keyring,
+            lambda: cache.keyring,  # live keyring; API-added keys converge here
             dispatcher,
             metrics,
-            host=listener_host,
-            port=listener_port,
+            host=settings.dns_bind,
+            port=settings.dns_port,
         )
         # Capture the non-optional instance so the readiness closure type-checks.
         readiness_server = dns_server
 
         def _dns_ready() -> bool:
             # DNS readiness (SPEC §11.2, T-M6-04): both sockets bound AND the DB
-            # routing snapshot loaded. In DB mode an empty-but-initialized keyring
-            # is "loaded" — zero configured keys is valid (unknown/unsigned UPDATEs
-            # answer NOTAUTH); the file seed, when present, is already folded into
-            # _keyring() at boot. cache.is_populated is the keyring+routing gate.
+            # routing snapshot loaded. An empty-but-initialized keyring is "loaded"
+            # — zero configured keys is valid (unknown/unsigned UPDATEs answer
+            # NOTAUTH). cache.is_populated is the keyring+routing gate.
             return readiness_server.is_accepting and cache.is_populated
 
         app = create_app(
@@ -397,7 +258,7 @@ async def serve(
         log.info(
             "both planes serving",
             extra={
-                "dns_host": listener_host,
+                "dns_host": settings.dns_bind,
                 "dns_port": dns_server.port,
                 "http_host": settings.http_bind,
                 "http_port": settings.http_port,
