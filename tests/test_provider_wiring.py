@@ -34,7 +34,7 @@ import dns.name
 import httpx
 import pytest_asyncio
 
-from astropath.bootstrap import (
+from astropath.assembly import (
     BackendConfig,
     BootstrapConfig,
     ZoneConfig,

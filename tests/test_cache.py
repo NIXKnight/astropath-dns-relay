@@ -35,7 +35,7 @@ import pytest
 from prometheus_client import CollectorRegistry
 from tests._fakes import FakeProvider, routing_for
 
-from astropath.bootstrap import DataPlaneRuntime
+from astropath.assembly import DataPlaneRuntime
 from astropath.cache import CacheSnapshot, RoutingCache
 from astropath.data_plane.dispatcher import Dispatcher
 from astropath.observability import DataPlaneMetrics

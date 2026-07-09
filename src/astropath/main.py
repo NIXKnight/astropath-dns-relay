@@ -59,8 +59,8 @@ from fastapi import FastAPI
 from prometheus_client import CollectorRegistry
 
 from astropath.api.app import create_app
+from astropath.assembly import build_data_plane
 from astropath.audit import DbAuditSink
-from astropath.bootstrap import build_data_plane
 from astropath.cache import Keyring, RoutingCache, make_db_loader
 from astropath.data_plane.dispatcher import Dispatcher, Route, RoutingSource
 from astropath.data_plane.server import Rfc2136Server

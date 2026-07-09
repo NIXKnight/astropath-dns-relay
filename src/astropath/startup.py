@@ -49,7 +49,8 @@ from sqlalchemy import Connection
 from sqlalchemy.ext.asyncio import AsyncEngine
 from sqlmodel import select
 
-from astropath.bootstrap import BootstrapConfig, BootstrapError, load_bootstrap
+from astropath.assembly import BootstrapConfig
+from astropath.bootstrap import BootstrapError, load_bootstrap
 from astropath.crypto import InvalidToken, Kek, KekError
 from astropath.data_plane.tsig import UnknownAlgorithm, algorithm_from_text
 from astropath.db import Database

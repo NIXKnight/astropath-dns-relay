@@ -45,8 +45,8 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 from sqlmodel import select
 from tests._fakes import FakeProvider, routing_for
 
+from astropath.assembly import BootstrapConfig, ZoneConfig
 from astropath.audit import DbAuditSink
-from astropath.bootstrap import BootstrapConfig, ZoneConfig
 from astropath.cache import RoutingCache, load_config_from_db, make_db_loader
 from astropath.crypto import Kek, generate_key
 from astropath.data_plane.dispatcher import Dispatcher

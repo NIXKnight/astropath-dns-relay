@@ -23,11 +23,10 @@ Postgres outage during a renewal cannot fail a challenge. The snapshot is loaded
 at startup and refreshed on management-API writes (event/callback, not a
 per-challenge poll — T-M3-16 wires the hooks).
 
-Runtime reuse (SPEC §16.3): the database rows are decrypted into the same
-:class:`~astropath.bootstrap.BootstrapConfig` the M1 file loader produces, then
-handed to the **shared** :func:`~astropath.bootstrap.build_data_plane` — identical
-runtime objects (keyring of ``Key`` objects, :class:`RoutingTable`, provider
-instances), only the source differs (file → DB).
+Runtime reuse (SPEC §16.3): the database rows are decrypted into a
+:class:`~astropath.assembly.BootstrapConfig`, then handed to the **shared**
+:func:`~astropath.assembly.build_data_plane` — the live runtime objects (keyring
+of ``Key`` objects, :class:`RoutingTable`, provider instances).
 
 Degraded behavior (SPEC §6.4): :meth:`RoutingCache.refresh` swaps the snapshot
 only on success. A failed refresh (DB unreachable) propagates to the caller for
@@ -51,7 +50,7 @@ import httpx
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlmodel import select
 
-from astropath.bootstrap import (
+from astropath.assembly import (
     BackendConfig,
     BootstrapConfig,
     DataPlaneRuntime,
