@@ -242,3 +242,30 @@ async def test_transport_error_maps_to_provider_error_without_leaking() -> None:
     assert "ConnectError" in message
     assert _DYNKEY not in message
     assert "dyn.dns.he.net" not in message  # endpoint not echoed either
+
+
+# --------------------------------------------------------------------------- #
+# Regression (prod SERVFAIL loop, 2026-07-12): HE answers `noipv4` (HTTP 200) to
+# the placeholder cleanup overwrite because a dyn-update sets no A/AAAA address
+# record. That MUST be a success on the cleanup path — HE cannot delete and the
+# challenge is already validated, so a leftover TXT is harmless (SPEC §5.3). The
+# old code hit the "unexpected response" branch, SERVFAILed cert-manager, and
+# wedged the ACME order (one challenge per DNS name), deadlocking all issuance.
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.parametrize("body", ["noipv4", "noipv6", "noipv4 \n", "NoIPv4"])
+async def test_cleanup_accepts_he_no_address_response(body: str) -> None:
+    """The observed prod body `noipv4` (and its IPv6 / wire-variant siblings) is
+    accepted on cleanup — no raise, so the dispatcher answers NOERROR."""
+    provider = _provider([body], [])
+    await provider.cleanup("example.com.", _RECORD, ["tok"])  # must not raise
+
+
+@pytest.mark.parametrize("body", ["noipv4", "noipv6"])
+async def test_present_still_fails_on_he_no_address_response(body: str) -> None:
+    """Present stays strict: `noipv4` means the token never landed, so present must
+    raise (dispatcher -> SERVFAIL) rather than silently mark the challenge solved."""
+    provider = _provider([body], [])
+    with pytest.raises(ProviderError):
+        await provider.present("example.com.", _RECORD, ["tok"])

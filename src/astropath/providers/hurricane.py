@@ -49,6 +49,13 @@ __all__ = ["HurricaneConfig", "HurricaneProvider"]
 _OK_RESPONSES = frozenset({"good", "nochg"})
 # HE status tokens that mean a durable operator misconfiguration, surfaced verbatim.
 _HARD_ERROR_RESPONSES = frozenset({"badauth", "nohost", "!yours", "notfqdn", "abuse"})
+# HE emits `noipv4`/`noipv6` (HTTP 200) when a dyn-update is accepted but sets no
+# A/AAAA address record — which is exactly what the placeholder overwrite does. On
+# the best-effort cleanup path this is benign: HE cannot delete
+# (``supports_delete=False``), the ACME challenge is already validated by cleanup
+# time, and a still-present challenge TXT is harmless (SPEC §5.3). Accepted on the
+# cleanup path ONLY; on present the token must actually land, so it stays a failure.
+_CLEANUP_BENIGN_RESPONSES = frozenset({"noipv4", "noipv6"})
 
 
 class HurricaneConfig(BaseModel):
@@ -118,7 +125,9 @@ class HurricaneProvider(Provider):
 
     async def cleanup(self, zone: str, record_name: str, values: list[str]) -> None:
         # HE cannot delete; overwrite with the placeholder sentinel (idempotent).
-        await self._update(record_name, self._cleanup_placeholder)
+        # Best-effort: HE answers `noipv4`/`noipv6` to this overwrite (it changes no
+        # address record); ``_update`` treats that as success on the cleanup path.
+        await self._update(record_name, self._cleanup_placeholder, cleanup=True)
 
     async def validate(self) -> None:
         if not self._record_keys:
@@ -133,7 +142,9 @@ class HurricaneProvider(Provider):
                 f"no HE dynamic key configured for record {record_name!r}"
             ) from exc
 
-    async def _update(self, record_name: str, txt_value: str) -> None:
+    async def _update(
+        self, record_name: str, txt_value: str, *, cleanup: bool = False
+    ) -> None:
         hostname = _normalize_record(record_name)
         password = self._key_for(record_name)  # secret — never logged
         try:
@@ -155,6 +166,10 @@ class HurricaneProvider(Provider):
 
         status = response.text.split()[0].lower() if response.text.strip() else ""
         if status in _OK_RESPONSES:
+            return
+        if cleanup and status in _CLEANUP_BENIGN_RESPONSES:
+            # Best-effort cleanup: HE accepted the request (HTTP 200) but changed no
+            # address record; nothing else to do — HE cannot delete (SPEC §5.3, §5.7).
             return
         if status in _HARD_ERROR_RESPONSES:
             raise ProviderError(f"HE rejected update for {hostname!r}: {status}")
