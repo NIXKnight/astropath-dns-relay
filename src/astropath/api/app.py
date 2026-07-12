@@ -112,7 +112,7 @@ def create_app(
     # are added explicitly with their own auth posture.
     app = FastAPI(
         title="astropath-dns-relay",
-        version="0.1.0",
+        version="0.1.1",
         summary="Self-hosted ACME DNS-01 solver gateway management API.",
         docs_url=None,
         redoc_url=None,

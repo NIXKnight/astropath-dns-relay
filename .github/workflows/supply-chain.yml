@@ -139,7 +139,7 @@ jobs:
           tags: ${{ env.IMAGE_REF }}
           provenance: false
           build-args: |
-            VERSION=0.1.0
+            VERSION=0.1.1
             VCS_REF=${{ github.sha }}
             BUILD_DATE=${{ steps.meta.outputs.created }}
           cache-from: type=gha
@@ -271,7 +271,7 @@ jobs:
           push: false
           outputs: type=cacheonly
           build-args: |
-            VERSION=0.1.0
+            VERSION=0.1.1
             VCS_REF=${{ github.sha }}
             BUILD_DATE=${{ steps.meta.outputs.created }}
           cache-from: type=gha
@@ -299,6 +299,6 @@ jobs:
       #       provenance: mode=max   # SLSA build provenance attestation
       #       sbom: true             # SBOM attestation attached to the pushed image
       #       build-args: |
-      #         VERSION=0.1.0
+      #         VERSION=0.1.1
       #         VCS_REF=${{ github.sha }}
       #         BUILD_DATE=${{ steps.meta.outputs.created }}

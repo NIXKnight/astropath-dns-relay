@@ -76,7 +76,7 @@ FROM python:3.12-slim-bookworm@sha256:8a7e7cc04fd3e2bd787f7f24e22d5d119aa590d429
 # created). CI passes --build-arg for the dynamic three; a bare `docker build`
 # still succeeds with the defaults below. `licenses` is the SPDX identifier for
 # the project license (GPL-3.0-or-later, SPEC §1.5).
-ARG VERSION=0.1.0
+ARG VERSION=0.1.1
 ARG VCS_REF=unknown
 ARG BUILD_DATE=unknown
 LABEL org.opencontainers.image.title="astropath-dns-relay" \

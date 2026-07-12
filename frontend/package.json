@@ -1,7 +1,7 @@
 {
   "name": "astropath-dns-relay-admin",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "astropath-dns-relay admin SPA (Vite + React + TypeScript).",
   "license": "GPL-3.0-or-later",
   "author": "Saad Ali",

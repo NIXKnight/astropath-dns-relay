@@ -69,7 +69,7 @@ env:
   # Version tag + VERSION build-arg (drives org.opencontainers.image.version).
   # Kept in step with pyproject [project].version and supply-chain.yml's build-arg;
   # bump all three together on a release.
-  VERSION: "0.1.0"
+  VERSION: "0.1.1"
 
 jobs:
   build:
