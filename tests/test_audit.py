@@ -133,6 +133,24 @@ async def test_provider_error_audits_error_detail_and_servfails() -> None:
     assert row.error_detail == "present boom"
 
 
+async def test_cleanup_provider_error_audits_error_but_answers_noerror() -> None:
+    """Deadlock regression (HIGH-8 + SPEC §3.6): a failing cleanup is answered
+    NOERROR so the ACME order is not wedged, yet the audit row still records the
+    error verbatim for forensics (result=error + error_detail)."""
+    provider = FakeProvider(fail=True)
+    sink = FakeSink()
+    dispatcher, _reg = _dispatcher(provider, sink)
+
+    rcode = await dispatcher.dispatch(_unsigned_update(delete=True), source="1.2.3.4")
+
+    assert rcode == dns.rcode.NOERROR
+    assert len(sink.records) == 1
+    row = sink.records[0]
+    assert row.action == "cleanup"
+    assert row.result == "error"
+    assert row.error_detail == "cleanup boom"
+
+
 async def test_no_audit_row_for_refused_write_surface() -> None:
     # A REFUSED (policy) rejection never reaches the provider, so no audit row.
     provider = FakeProvider()

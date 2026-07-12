@@ -344,16 +344,35 @@ class Dispatcher:
             else:
                 await provider.cleanup(zone_text, record_name, values)
         except ProviderError as exc:
-            result, rcode = "error", dns.rcode.SERVFAIL
+            result = "error"
             error_detail = str(exc)  # provider errors are already secret-free
+            # ACME cleanup is best-effort (SPEC §3.6, §5.3): once a challenge is
+            # validated a leftover TXT is harmless, and SERVFAIL on cleanup would
+            # wedge the order — cert-manager allows one challenge per DNS name, so a
+            # perpetually failing cleanup deadlocks every future issuance/renewal for
+            # that name. Answer NOERROR for a cleanup failure (still audited and
+            # counted below); present stays strict SERVFAIL, where a failed write
+            # means the token never landed and the challenge must not be solved.
+            rcode = (
+                dns.rcode.NOERROR if action is Action.CLEANUP else dns.rcode.SERVFAIL
+            )
         else:
             result, rcode = "ok", dns.rcode.NOERROR
         latency = time.perf_counter() - started
+        # A suppressed cleanup failure (answered NOERROR) gets a dedicated
+        # result="suppressed" series on the existing challenges counter — never a
+        # hard "error", since the DNS answer succeeded; the audit row below still
+        # records result="error" + the detail for forensics.
+        cleanup_suppressed = result == "error" and action is Action.CLEANUP
 
         self._metrics.provider_call_duration.labels(provider=provider.type).observe(
             latency
         )
-        self._metrics.record_challenge(provider.type, action.value, result)
+        self._metrics.record_challenge(
+            provider.type,
+            action.value,
+            "suppressed" if cleanup_suppressed else result,
+        )
         if result == "ok":
             self._metrics.mark_zone_success(zone_text, self._clock())
 
@@ -361,7 +380,9 @@ class Dispatcher:
         # handle_query stamps this record, tying it to the challenge's other logs
         # and its ChallengeEvent audit row. Proves provider success/failure — the
         # HE good/nochg vs badauth outcome maps to result=ok/error (SPEC §16, LOW-4).
-        log.info(
+        # A suppressed cleanup failure logs at WARNING (answered NOERROR; §5.3).
+        log.log(
+            logging.WARNING if cleanup_suppressed else logging.INFO,
             "challenge %s %s zone=%s provider=%s latency_ms=%d source=%s",
             action.value,
             result,

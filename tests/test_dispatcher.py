@@ -372,6 +372,36 @@ async def test_dispatch_provider_error_servfail() -> None:
     )
 
 
+async def test_dispatch_cleanup_provider_error_answers_noerror() -> None:
+    """Deadlock regression: a cleanup provider failure must NOT SERVFAIL — that
+    wedges the ACME order (one challenge per DNS name) and deadlocks all future
+    issuance. The dispatcher answers NOERROR and counts a dedicated `suppressed`
+    series; the present-error path above keeps SERVFAIL."""
+    provider = FakeProvider(fail=True)
+    dispatcher, reg = _dispatcher(provider)
+
+    rcode = await dispatcher.dispatch(
+        _parsed_update(delete=True, value="tok"), source="1.2.3.4"
+    )
+
+    assert rcode == dns.rcode.NOERROR
+    assert (
+        reg.get_sample_value(
+            "astropath_challenges_total",
+            {"provider": "fake", "action": "cleanup", "result": "suppressed"},
+        )
+        == 1.0
+    )
+    # A suppressed cleanup is not a hard error: the error series stays untouched.
+    assert (
+        reg.get_sample_value(
+            "astropath_challenges_total",
+            {"provider": "fake", "action": "cleanup", "result": "error"},
+        )
+        is None
+    )
+
+
 # --------------------------------------------------------------------------- #
 # T-M1-14: per-FQDN serialization (HE single-value)
 # --------------------------------------------------------------------------- #
